@@ -30,6 +30,8 @@ from homeassistant.helpers.update_coordinator import (
 from . import CONF_UPDATED_AT
 from .const import (
     ATTR_KEY_CURRENT_LADDER_START_DATE,
+    ATTR_KEY_APPLIED_CORRECTIONS,
+    ATTR_KEY_DATA_QUALITY,
     ATTR_KEY_LAST_MONTH_BY_DAY,
     ATTR_KEY_LAST_YEAR_BY_MONTH,
     ATTR_KEY_LATEST_DAY_DATE,
@@ -39,6 +41,7 @@ from .const import (
     CONF_ELE_ACCOUNTS,
     CONF_SETTINGS,
     CONF_UPDATE_INTERVAL,
+    CORRECTIONS_FILENAME,
     DATA_KEY_LAST_UPDATE_DAY,
     DOMAIN,
     SETTING_LAST_MONTH_UPDATE_DAY_THRESHOLD,
@@ -61,6 +64,12 @@ from .const import (
     SUFFIX_THIS_YEAR_COST,
     SUFFIX_THIS_YEAR_KWH,
     SUFFIX_YESTERDAY_KWH,
+)
+from .data_quality import (
+    apply_daily_corrections,
+    corrected_month_total,
+    load_daily_corrections,
+    validate_month_data,
 )
 from .csg_client import (
     JSON_KEY_METERING_POINT_NUMBER,
@@ -358,6 +367,52 @@ class CSGCoordinator(DataUpdateCoordinator):
         self._last_month_ym = None
         self._this_month_update_completed_flag = asyncio.Event()
         self._gathered_data = {}
+        self._daily_corrections = {}
+
+    async def _async_load_daily_corrections(self) -> None:
+        """Load optional user-confirmed corrections before every refresh."""
+        path = self.hass.config.path(CORRECTIONS_FILENAME)
+        try:
+            self._daily_corrections = await self.hass.async_add_executor_job(
+                load_daily_corrections, path
+            )
+        except (OSError, ValueError) as err:
+            self._daily_corrections = {}
+            _LOGGER.error("Unable to load %s: %s", CORRECTIONS_FILENAME, err)
+
+    def _prepare_month_source(
+        self,
+        account_number: str,
+        source: str,
+        total_kwh: float | str,
+        by_day: list | str,
+    ) -> tuple[float | str, list | str, list[str]]:
+        """Apply confirmed corrections, then reject impossible API values."""
+        applied_dates: list[str] = []
+        if isinstance(by_day, list):
+            by_day, applied_dates = apply_daily_corrections(
+                by_day,
+                self._daily_corrections.get(account_number, {}),
+            )
+            if applied_dates:
+                total_kwh = corrected_month_total(by_day)
+                _LOGGER.warning(
+                    "Applied confirmed daily corrections for account %s from %s: %s",
+                    account_number,
+                    source,
+                    ", ".join(applied_dates),
+                )
+
+        validation_error = validate_month_data(total_kwh, by_day)
+        if validation_error:
+            _LOGGER.error(
+                "Rejected invalid monthly consumption for account %s from %s: %s",
+                account_number,
+                source,
+                validation_error,
+            )
+            return STATE_UNAVAILABLE, STATE_UNAVAILABLE, []
+        return total_kwh, by_day, applied_dates
 
     async def _async_refresh_client(self):
         """Refresh the client, update the user data.
@@ -554,42 +609,39 @@ class CSGCoordinator(DataUpdateCoordinator):
         by_day_from_usage: list | str,
         kwh_from_usage: float | str,
     ) -> (list | str, float | str):
-        """Merge by_day_from_usage and by_day_from_cost data"""
-        # merge by_day
-        # determine which is the latest
+        """Merge daily data and keep the total from the selected source."""
         if (
             by_day_from_cost == STATE_UNAVAILABLE
             and by_day_from_usage == STATE_UNAVAILABLE
         ):
-            by_day = STATE_UNAVAILABLE
+            return STATE_UNAVAILABLE, STATE_UNAVAILABLE
         elif by_day_from_cost == STATE_UNAVAILABLE:
-            by_day = by_day_from_usage
+            return by_day_from_usage, kwh_from_usage
         elif by_day_from_usage == STATE_UNAVAILABLE:
-            by_day = by_day_from_cost
-        else:
-            # both are available
-            if len(by_day_from_cost) >= len(by_day_from_usage):
-                # the result from daily cost is newer
-                by_day = by_day_from_cost
-            else:
-                # the result from daily usage is newer
-                # but since the result from daily cost contains cost data, need to merge them
-                by_day = by_day_from_usage
-                for idx, item in enumerate(by_day_from_cost):
-                    by_day[idx][WF_ATTR_CHARGE] = item[WF_ATTR_CHARGE]
+            return by_day_from_cost, kwh_from_cost
 
-        # determine which one to use as kwh
-        if kwh_from_cost == STATE_UNAVAILABLE and kwh_from_usage == STATE_UNAVAILABLE:
-            kwh = STATE_UNAVAILABLE
-        elif kwh_from_cost == STATE_UNAVAILABLE:
-            kwh = kwh_from_usage
-        elif kwh_from_usage == STATE_UNAVAILABLE:
-            kwh = kwh_from_cost
-        else:
-            # determine which kwh is the latest
-            # get the larger one
-            kwh = max(kwh_from_cost, kwh_from_usage)
-        return by_day, kwh
+        cost_latest_date = max(
+            (str(item.get(WF_ATTR_DATE, "")) for item in by_day_from_cost),
+            default="",
+        )
+        usage_latest_date = max(
+            (str(item.get(WF_ATTR_DATE, "")) for item in by_day_from_usage),
+            default="",
+        )
+        if cost_latest_date >= usage_latest_date:
+            return by_day_from_cost, kwh_from_cost
+
+        cost_by_date = {
+            str(item.get(WF_ATTR_DATE, "")): item for item in by_day_from_cost
+        }
+        merged_usage = []
+        for usage_item in by_day_from_usage:
+            merged_item = dict(usage_item)
+            cost_item = cost_by_date.get(str(usage_item.get(WF_ATTR_DATE, "")), {})
+            if WF_ATTR_CHARGE in cost_item:
+                merged_item[WF_ATTR_CHARGE] = cost_item[WF_ATTR_CHARGE]
+            merged_usage.append(merged_item)
+        return merged_usage, kwh_from_usage
 
     async def _async_update_this_month_stats_and_ladder(
         self, account: CSGElectricityAccount
@@ -613,9 +665,20 @@ class CSGCoordinator(DataUpdateCoordinator):
 
         if success_usage:
             this_month_kwh_from_usage, this_month_by_day_from_usage = result_usage
+            (
+                this_month_kwh_from_usage,
+                this_month_by_day_from_usage,
+                usage_corrections,
+            ) = self._prepare_month_source(
+                account.account_number,
+                "daily usage API",
+                this_month_kwh_from_usage,
+                this_month_by_day_from_usage,
+            )
         else:
             this_month_kwh_from_usage = STATE_UNAVAILABLE
             this_month_by_day_from_usage = STATE_UNAVAILABLE
+            usage_corrections = []
 
         if success_cost:
             (
@@ -629,6 +692,25 @@ class CSGCoordinator(DataUpdateCoordinator):
                 this_month_cost = STATE_UNAVAILABLE
             if this_month_kwh_from_cost is None:
                 this_month_kwh_from_cost = STATE_UNAVAILABLE
+            if this_month_kwh_from_cost != STATE_UNAVAILABLE:
+                (
+                    this_month_kwh_from_cost,
+                    this_month_by_day_from_cost,
+                    cost_corrections,
+                ) = self._prepare_month_source(
+                    account.account_number,
+                    "daily cost API",
+                    this_month_kwh_from_cost,
+                    this_month_by_day_from_cost,
+                )
+            else:
+                cost_corrections = []
+            if this_month_kwh_from_cost == STATE_UNAVAILABLE:
+                this_month_cost = STATE_UNAVAILABLE
+                # Never merge daily rows from a rejected cost response back into
+                # the validated usage response. The API can return a missing
+                # monthly kWh total alongside malformed per-day charges.
+                this_month_by_day_from_cost = STATE_UNAVAILABLE
             ladder_stage = (
                 ladder[WF_ATTR_LADDER]
                 if ladder[WF_ATTR_LADDER] is not None
@@ -650,6 +732,7 @@ class CSGCoordinator(DataUpdateCoordinator):
                 else STATE_UNAVAILABLE
             )
         else:
+            cost_corrections = []
             (
                 this_month_cost,
                 this_month_kwh_from_cost,
@@ -685,7 +768,13 @@ class CSGCoordinator(DataUpdateCoordinator):
             SUFFIX_THIS_MONTH_COST
         ] = this_month_cost
         self._gathered_data[account.account_number][ATTR_KEY_THIS_MONTH_BY_DAY] = {
-            ATTR_KEY_THIS_MONTH_BY_DAY: this_month_by_day
+            ATTR_KEY_THIS_MONTH_BY_DAY: this_month_by_day,
+            ATTR_KEY_DATA_QUALITY: (
+                "corrected" if usage_corrections or cost_corrections else "source"
+            ),
+            ATTR_KEY_APPLIED_CORRECTIONS: sorted(
+                set(usage_corrections + cost_corrections)
+            ),
         }
         self._gathered_data[account.account_number][
             SUFFIX_CURRENT_LADDER
@@ -746,6 +835,16 @@ class CSGCoordinator(DataUpdateCoordinator):
 
         if success_usage:
             last_month_kwh_from_usage, last_month_by_day_from_usage = result_usage
+            (
+                last_month_kwh_from_usage,
+                last_month_by_day_from_usage,
+                _,
+            ) = self._prepare_month_source(
+                account.account_number,
+                "last-month daily usage API",
+                last_month_kwh_from_usage,
+                last_month_by_day_from_usage,
+            )
         else:
             last_month_kwh_from_usage = STATE_UNAVAILABLE
             last_month_by_day_from_usage = STATE_UNAVAILABLE
@@ -767,6 +866,16 @@ class CSGCoordinator(DataUpdateCoordinator):
                 last_month_kwh_from_cost = sum(
                     d[WF_ATTR_KWH] for d in last_month_by_day_from_cost
                 )
+            (
+                last_month_kwh_from_cost,
+                last_month_by_day_from_cost,
+                _,
+            ) = self._prepare_month_source(
+                account.account_number,
+                "last-month daily cost API",
+                last_month_kwh_from_cost,
+                last_month_by_day_from_cost,
+            )
         else:
             (
                 last_month_cost,
@@ -956,6 +1065,7 @@ class CSGCoordinator(DataUpdateCoordinator):
             seconds=self._config[CONF_SETTINGS][CONF_UPDATE_INTERVAL]
         )
         self._update_states()
+        await self._async_load_daily_corrections()
         # _LOGGER.debug("Coordinator update interval: %d", self.update_interval.seconds)
         _LOGGER.debug("Coordinator update started")
         start_time = time.time()

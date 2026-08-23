@@ -39,6 +39,24 @@
 
 注意：本集成需求`Home Assistant`最低版本为`2022.11`。
 
+### 可选：修正南网已确认的异常日数据
+
+如果南网接口返回了明显错误的负用电量，而南网在线 App 已显示正确值，可以在
+Home Assistant 配置目录创建 `china_southern_power_grid_stat_corrections.json`：
+
+```json
+{
+  "accounts": {
+    "缴费号": {
+      "2026-08-19": {"kwh": 25.51}
+    }
+  }
+}
+```
+
+集成会在刷新时应用修正并根据逐日数据重算月累计值。未配置修正时，含负用电量的
+数据源会被拒绝，而不会将负数发布到 Home Assistant。
+
 ### 配置界面
 
 支持的登录方式
@@ -147,7 +165,6 @@
 - [【抄作业】电费插件(NR流)-南网](https://bbs.hassbian.com/thread-18122-1-1.html)
 
 自定义集成教程参考：[Building a Home Assistant Custom Component Part 1: Project Structure and Basics](https://aarongodfrey.dev/home%20automation/building_a_home_assistant_custom_component_part_1/)
-
 
 
 

@@ -5,6 +5,7 @@ from datetime import timedelta
 from .csg_client import LoginType
 
 DOMAIN = "china_southern_power_grid_stat"
+CORRECTIONS_FILENAME = "china_southern_power_grid_stat_corrections.json"
 
 # config flow
 # main account (phone number)
@@ -76,6 +77,8 @@ ATTR_KEY_LAST_MONTH_BY_DAY = "last_month_by_day"
 ATTR_KEY_LAST_YEAR_BY_MONTH = "last_year_by_month"
 ATTR_KEY_LATEST_DAY_DATE = "latest_day_date"
 ATTR_KEY_CURRENT_LADDER_START_DATE = "current_ladder_start_date"
+ATTR_KEY_DATA_QUALITY = "data_quality"
+ATTR_KEY_APPLIED_CORRECTIONS = "applied_corrections"
 
 STATE_UPDATE_UNCHANGED = "unchanged"
 DATA_KEY_LAST_UPDATE_DAY = "last_update_day"
