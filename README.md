@@ -2,9 +2,12 @@
 
 # 南方电网电费数据HA集成
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration)
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/cubicpill/china_southern_power_grid_stat)](https://github.com/CubicPill/china_southern_power_grid_stat/releases)
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/charmmmz/china_southern_power_grid_stat)](https://github.com/charmmmz/china_southern_power_grid_stat/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+
+本仓库基于 [CubicPill/china_southern_power_grid_stat](https://github.com/CubicPill/china_southern_power_grid_stat)
+维护，继续兼容新版 Home Assistant，并针对南方电网接口的异常日数据补充校验和纠正能力。
 
 ## 支持功能
 
@@ -13,6 +16,10 @@
 - ✅支持多个南网账户（每个账户一个集成），支持单个账户下的多个缴费号
 - ✅数据自动抓取和更新（默认间隔4小时，可配置）
 - ✅全程GUI配置，无需编辑yaml进行配置（暂不支持yaml配置）
+- ✅兼容新版 Home Assistant 的集成选项页面
+- ✅拦截南方电网返回的负用电量、负电费等异常数据
+- ✅按最新结算日期选择每日数据源，避免接口更新时间不同导致日期重复或归属错误
+- ✅支持按缴费号和结算日期修正已由南网在线 App 确认的异常日数据
 
 可接入如下数据：
 
@@ -33,11 +40,32 @@
 暂时也没有支持计划（南网暂时没有统一的API），如有需求，建议单独创建对应的电价实体。
 
 ❌因为南网登录API调整，不再支持登录态失效之后自动重新登录，需要手动重新登录。
+
 ## 使用方法
 
-使用[HACS](https://hacs.xyz/)或[手动下载安装](https://github.com/CubicPill/china_southern_power_grid_stat/releases)
+### HACS 自定义仓库
 
-注意：本集成需求`Home Assistant`最低版本为`2022.11`。
+本 fork 不属于 HACS 默认仓库，需要先添加为自定义仓库：
+
+1. 打开 HACS → 集成。
+2. 在右上角菜单中选择“自定义存储库”。
+3. 添加 `https://github.com/charmmmz/china_southern_power_grid_stat`，类别选择“集成”。
+4. 搜索并安装 **China Southern Power Grid Statistics**，然后重启 Home Assistant。
+
+也可以从 [GitHub Releases](https://github.com/charmmmz/china_southern_power_grid_stat/releases)
+下载对应版本，手动复制 `custom_components/china_southern_power_grid_stat` 到 Home Assistant 配置目录。
+
+注意：本集成要求 `Home Assistant` 最低版本为 `2022.11`。
+
+### 数据口径与异常处理
+
+南方电网的每日用电量按 App 中的结算日期归属，而不是按 Home Assistant 实际刷新到数据的小时和分钟归属。
+当用电量接口和电费接口更新进度不一致时，集成会选择包含最新结算日期的数据源，再按日期合并可用字段，
+避免因比较月累计值而把旧数据误判为最新数据。
+
+如果任一数据源包含负用电量、负电费、非数字或非有限值，集成会拒绝该数据源，不把异常值发布到
+Home Assistant。月度传感器的 `data_quality` 属性会标明数据来自南网接口还是已应用本地纠正；
+`applied_corrections` 会列出本次应用纠正的日期。
 
 ### 可选：修正南网已确认的异常日数据
 
@@ -61,15 +89,15 @@ Home Assistant 配置目录创建 `china_southern_power_grid_stat_corrections.js
 
 支持的登录方式
 
-<img src="https://raw.githubusercontent.com/CubicPill/china_southern_power_grid_stat/master/img/setup_login.png" alt="" style="width: 400px;">
+<img src="https://raw.githubusercontent.com/charmmmz/china_southern_power_grid_stat/master/img/setup_login.png" alt="" style="width: 400px;">
 
 配置界面
 
-<img src="https://raw.githubusercontent.com/CubicPill/china_southern_power_grid_stat/master/img/setup_add_account.png" alt="" style="width: 400px;">
+<img src="https://raw.githubusercontent.com/charmmmz/china_southern_power_grid_stat/master/img/setup_add_account.png" alt="" style="width: 400px;">
 
 添加缴费号
 
-<img src="https://raw.githubusercontent.com/CubicPill/china_southern_power_grid_stat/master/img/setup_select_account.png" alt="" style="width: 400px;">
+<img src="https://raw.githubusercontent.com/charmmmz/china_southern_power_grid_stat/master/img/setup_select_account.png" alt="" style="width: 400px;">
 
 传感器列表
 - 余额
@@ -94,11 +122,11 @@ Home Assistant 配置目录创建 `china_southern_power_grid_stat_corrections.js
 
 传感器额外参数（每月用量、每日用量）
 
-<img src="https://raw.githubusercontent.com/CubicPill/china_southern_power_grid_stat/master/img/sensor_attr.png" alt="" style="width: 400px;">
+<img src="https://raw.githubusercontent.com/charmmmz/china_southern_power_grid_stat/master/img/sensor_attr.png" alt="" style="width: 400px;">
 
 参数设置
 
-<img src="https://raw.githubusercontent.com/CubicPill/china_southern_power_grid_stat/master/img/setup_params.png" alt="" style="width: 400px;">
+<img src="https://raw.githubusercontent.com/charmmmz/china_southern_power_grid_stat/master/img/setup_params.png" alt="" style="width: 400px;">
 
 ### 数据更新策略
 
@@ -150,7 +178,7 @@ Home Assistant 配置目录创建 `china_southern_power_grid_stat_corrections.js
 
 ### API 实现库
 
-本项目代码中的[`csg_client/__init__.py`](https://github.com/CubicPill/china_southern_power_grid_stat/blob/master/custom_components/china_southern_power_grid_stat/csg_client/__init__.py)
+本项目代码中的[`csg_client/__init__.py`](https://github.com/charmmmz/china_southern_power_grid_stat/blob/master/custom_components/china_southern_power_grid_stat/csg_client/__init__.py)
 是对南网在线 App API 的实现，可以独立于此项目单独使用。
 详细使用方法见`csg_client_demo.py`
 
@@ -165,7 +193,6 @@ Home Assistant 配置目录创建 `china_southern_power_grid_stat_corrections.js
 - [【抄作业】电费插件(NR流)-南网](https://bbs.hassbian.com/thread-18122-1-1.html)
 
 自定义集成教程参考：[Building a Home Assistant Custom Component Part 1: Project Structure and Basics](https://aarongodfrey.dev/home%20automation/building_a_home_assistant_custom_component_part_1/)
-
 
 
 
