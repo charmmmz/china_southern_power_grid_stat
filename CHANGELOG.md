@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [1.3.0] - 2026-10-06
 
+### Added
+
+- Include optional Home Assistant dashboard and Tesserae v0.2.0 widget examples using supported calendar usage and issued monthly bills. The Tesserae widget preserves its original styling, shows four kWh headline values, and compares daily averages with the previous complete calendar month. Public examples use placeholder accounts and synthetic widget samples.
+
 ### Fixed
 
 - Restore daily and monthly energy readings using the electricity calendar when legacy daily endpoints return no data.

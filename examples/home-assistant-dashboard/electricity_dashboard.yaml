@@ -1,0 +1,61 @@
+template:
+  - sensor:
+      - name: "Electricity Arrears Status"
+        unique_id: electricity_arrears_status
+        icon: >
+          {% set raw = states('sensor.csgaccount_example_account_example_account_arrears') %}
+          {% set normalized = raw | lower %}
+          {% set value = raw | float(none) %}
+          {% if raw is none or normalized in ['unknown', 'unavailable', 'none', '', 'null'] or value is none %}
+            mdi:alert-circle-outline
+          {% elif value > 0 %}
+            mdi:cash-alert
+          {% else %}
+            mdi:cash-check
+          {% endif %}
+        state: >
+          {% set raw = states('sensor.csgaccount_example_account_example_account_arrears') %}
+          {% set normalized = raw | lower %}
+          {% set value = raw | float(none) %}
+          {% if raw is none or normalized in ['unknown', 'unavailable', 'none', '', 'null'] or value is none %}
+            unavailable
+          {% else %}
+            {% if value > 0 %}
+              arrears
+            {% else %}
+              normal
+            {% endif %}
+          {% endif %}
+        attributes:
+          arrears: "{{ states('sensor.csgaccount_example_account_example_account_arrears') }}"
+          balance: "{{ states('sensor.csgaccount_example_account_example_account_balance') }}"
+
+      # Date-based status: monthly costs and tariff ladders are not supported.
+      - name: "Electricity Data Status"
+        unique_id: electricity_data_status
+        icon: >
+          {% set date = state_attr('sensor.csgaccount_example_account_example_account_latest_day_kwh', 'latest_day_date') %}
+          {% set source = as_datetime(date, none) %}
+          {% if not has_value('sensor.csgaccount_example_account_example_account_latest_day_kwh') or source is none %}
+            mdi:database-alert
+          {% elif (now().date() - source.date()).days > 1 %}
+            mdi:database-clock
+          {% else %}
+            mdi:database-check
+          {% endif %}
+        state: >
+          {% set date = state_attr('sensor.csgaccount_example_account_example_account_latest_day_kwh', 'latest_day_date') %}
+          {% set source = as_datetime(date, none) %}
+          {% if not has_value('sensor.csgaccount_example_account_example_account_latest_day_kwh') %}
+            latest_kwh_missing
+          {% elif source is none %}
+            date_missing
+          {% elif (now().date() - source.date()).days > 1 %}
+            delayed
+          {% else %}
+            normal
+          {% endif %}
+        attributes:
+          latest_day_kwh: "{{ states('sensor.csgaccount_example_account_example_account_latest_day_kwh') }}"
+          latest_day_date: "{{ state_attr('sensor.csgaccount_example_account_example_account_latest_day_kwh', 'latest_day_date') }}"
+          yesterday_kwh: "{{ states('sensor.csgaccount_example_account_example_account_yesterday_kwh') }}"

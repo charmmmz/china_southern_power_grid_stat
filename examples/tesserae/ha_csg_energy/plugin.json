@@ -1,0 +1,632 @@
+{
+  "tesserae_compat": "1.x",
+  "name": "Home Assistant, China Southern Grid",
+  "version": "0.2.0",
+  "kind": "widget",
+  "description": "Daily electricity usage and current-month kWh with the previous issued monthly bill from Home Assistant. No estimated costs or unavailable tariff data.",
+  "icon": "ph-lightning",
+  "supports": {
+    "sizes": [
+      "xs",
+      "sm",
+      "md",
+      "lg"
+    ]
+  },
+  "settings": [],
+  "cell_options": [
+    {
+      "name": "account",
+      "type": "select",
+      "label": "Electricity account",
+      "default": "",
+      "choices_from": "account",
+      "help": "Auto-discovers China Southern Power Grid accounts from Home Assistant. Account numbers are masked in rendered output."
+    },
+    {
+      "name": "account_label",
+      "type": "string",
+      "label": "Account label (optional)",
+      "default": ""
+    },
+    {
+      "name": "label",
+      "type": "string",
+      "label": "Module label",
+      "default": "ENERGY//USAGE"
+    },
+    {
+      "name": "window",
+      "type": "select",
+      "label": "Trend window",
+      "default": "14",
+      "choices": [
+        {
+          "value": "7",
+          "label": "Last 7 days"
+        },
+        {
+          "value": "14",
+          "label": "Last 14 days"
+        },
+        {
+          "value": "30",
+          "label": "Last 30 days"
+        },
+        {
+          "value": "month",
+          "label": "Current month"
+        }
+      ]
+    },
+    {
+      "name": "threshold_mode",
+      "type": "select",
+      "label": "Colour thresholds",
+      "default": "auto",
+      "choices": [
+        {
+          "value": "auto",
+          "label": "Automatic from visible data"
+        },
+        {
+          "value": "manual",
+          "label": "Manual daily usage thresholds"
+        }
+      ]
+    },
+    {
+      "name": "show_comparison",
+      "type": "boolean",
+      "label": "Compare daily average with the previous full month",
+      "default": true
+    },
+    {
+      "name": "layout",
+      "type": "select",
+      "label": "Module layout",
+      "default": "standard",
+      "choices": [
+        {
+          "value": "standard",
+          "label": "Standard split module"
+        },
+        {
+          "value": "overview",
+          "label": "Room overview"
+        }
+      ]
+    },
+    {
+      "name": "low_kwh_threshold",
+      "type": "number",
+      "label": "Low-to-medium usage (kWh)",
+      "default": 15
+    },
+    {
+      "name": "high_kwh_threshold",
+      "type": "number",
+      "label": "Medium-to-high usage (kWh)",
+      "default": 25
+    }
+  ],
+  "render": {
+    "dither": "floyd-steinberg",
+    "needs_network": false
+  },
+  "fragments": [
+    {
+      "id": "full",
+      "label": "Usage and previous monthly bill",
+      "w": 1120,
+      "h": 440,
+      "icon": "ph-lightning"
+    },
+    {
+      "id": "summary",
+      "label": "Usage and bill summary",
+      "w": 380,
+      "h": 320,
+      "icon": "ph-lightning"
+    },
+    {
+      "id": "trend",
+      "label": "Daily electricity usage",
+      "w": 780,
+      "h": 320,
+      "icon": "ph-chart-line-up"
+    },
+    {
+      "id": "billing",
+      "label": "Previous monthly bill",
+      "w": 500,
+      "h": 160,
+      "icon": "ph-currency-cny"
+    }
+  ],
+  "data_schema": {
+    "fields": [
+      {
+        "name": "_fetched_at",
+        "label": "Fetched at",
+        "type": "num"
+      },
+      {
+        "name": "account_count",
+        "label": "Account count",
+        "type": "num"
+      },
+      {
+        "name": "account_label",
+        "label": "Masked account label",
+        "type": "str"
+      },
+      {
+        "name": "billing.arrears",
+        "label": "Arrears",
+        "type": "num",
+        "unit": "CNY"
+      },
+      {
+        "name": "billing.balance",
+        "label": "Balance",
+        "type": "num",
+        "unit": "CNY"
+      },
+      {
+        "name": "current_month_days[].date",
+        "label": "Date",
+        "type": "arr"
+      },
+      {
+        "name": "current_month_days[].kwh",
+        "label": "Kwh",
+        "type": "arr",
+        "unit": "kWh"
+      },
+      {
+        "name": "label",
+        "label": "Label",
+        "type": "str"
+      },
+      {
+        "name": "latest.date",
+        "label": "Latest reported usage date",
+        "type": "str",
+        "format": "MMM d"
+      },
+      {
+        "name": "latest.kwh",
+        "label": "Latest daily usage (kWh)",
+        "type": "num",
+        "unit": "kWh"
+      },
+      {
+        "name": "month.average_comparison.current_daily_kwh",
+        "label": "Current reported-day average",
+        "type": "num",
+        "unit": "kWh"
+      },
+      {
+        "name": "month.average_comparison.delta_pct",
+        "label": "Change in daily average",
+        "type": "num",
+        "unit": "%"
+      },
+      {
+        "name": "month.average_comparison.previous_daily_kwh",
+        "label": "Previous full-month daily average",
+        "type": "num",
+        "unit": "kWh"
+      },
+      {
+        "name": "month.average_daily_kwh",
+        "label": "Average reported daily usage (kWh)",
+        "type": "num",
+        "unit": "kWh"
+      },
+      {
+        "name": "month.comparison.current_kwh",
+        "label": "Current kwh",
+        "type": "num",
+        "unit": "kWh"
+      },
+      {
+        "name": "month.comparison.days",
+        "label": "Days",
+        "type": "num"
+      },
+      {
+        "name": "month.comparison.delta_pct",
+        "label": "Usage change on matching days (%)",
+        "type": "num",
+        "unit": "%"
+      },
+      {
+        "name": "month.comparison.previous_kwh",
+        "label": "Previous kwh",
+        "type": "num",
+        "unit": "kWh"
+      },
+      {
+        "name": "month.days",
+        "label": "Days",
+        "type": "num"
+      },
+      {
+        "name": "month.period",
+        "label": "Period",
+        "type": "str"
+      },
+      {
+        "name": "month.series_kwh",
+        "label": "Series kwh",
+        "type": "num",
+        "unit": "kWh"
+      },
+      {
+        "name": "month.total_kwh",
+        "label": "Current month usage (kWh)",
+        "type": "num",
+        "unit": "kWh"
+      },
+      {
+        "name": "previous_month.average_daily_kwh",
+        "label": "Previous full-month daily average",
+        "type": "num",
+        "unit": "kWh"
+      },
+      {
+        "name": "previous_month.billing_month",
+        "label": "Confirmed billing month",
+        "type": "str"
+      },
+      {
+        "name": "previous_month.period",
+        "label": "Previous calendar month",
+        "type": "str"
+      },
+      {
+        "name": "previous_month.total_cost",
+        "label": "Previous issued monthly bill (CNY)",
+        "type": "num",
+        "unit": "CNY"
+      },
+      {
+        "name": "previous_month.total_kwh",
+        "label": "Previous month usage (kWh)",
+        "type": "num",
+        "unit": "kWh"
+      },
+      {
+        "name": "previous_month_days[].date",
+        "label": "Date",
+        "type": "arr"
+      },
+      {
+        "name": "previous_month_days[].kwh",
+        "label": "Kwh",
+        "type": "arr",
+        "unit": "kWh"
+      },
+      {
+        "name": "series[].date",
+        "label": "Date",
+        "type": "arr"
+      },
+      {
+        "name": "series[].kwh",
+        "label": "Kwh",
+        "type": "arr",
+        "unit": "kWh"
+      },
+      {
+        "name": "status.arrears",
+        "label": "Arrears",
+        "type": "str"
+      },
+      {
+        "name": "status.data",
+        "label": "Data",
+        "type": "str"
+      },
+      {
+        "name": "thresholds.high",
+        "label": "High",
+        "type": "num",
+        "unit": "kWh"
+      },
+      {
+        "name": "thresholds.low",
+        "label": "Low",
+        "type": "num",
+        "unit": "kWh"
+      },
+      {
+        "name": "thresholds.mode",
+        "label": "Mode",
+        "type": "str"
+      },
+      {
+        "name": "thresholds.unit",
+        "label": "Unit",
+        "type": "str"
+      },
+      {
+        "name": "updated_at",
+        "label": "Widget fetch timestamp",
+        "type": "str",
+        "format": "HH:mm"
+      },
+      {
+        "name": "year_months[].charge",
+        "label": "Charge",
+        "type": "arr",
+        "unit": "CNY"
+      },
+      {
+        "name": "year_months[].kwh",
+        "label": "Kwh",
+        "type": "arr",
+        "unit": "kWh"
+      },
+      {
+        "name": "year_months[].month",
+        "label": "Month",
+        "type": "arr"
+      }
+    ],
+    "sample": {
+      "account_count": 1,
+      "account_label": "EXAMPLE HOME",
+      "label": "ENERGY//USAGE",
+      "billing": {
+        "arrears": 0,
+        "balance": 100
+      },
+      "latest": {
+        "date": "2026-10-03",
+        "kwh": 22
+      },
+      "month": {
+        "period": "2026-10",
+        "days": 3,
+        "total_kwh": 60,
+        "series_kwh": 60,
+        "average_daily_kwh": 20,
+        "comparison": {
+          "days": 3,
+          "current_kwh": 60,
+          "previous_kwh": 48,
+          "delta_pct": 25
+        },
+        "average_comparison": {
+          "current_daily_kwh": 20,
+          "previous_daily_kwh": 16,
+          "delta_pct": 25
+        }
+      },
+      "previous_month": {
+        "period": "2026-09",
+        "billing_month": "2026-09",
+        "total_kwh": 480,
+        "total_cost": 288,
+        "average_daily_kwh": 16
+      },
+      "current_month_days": [
+        {
+          "date": "2026-10-01",
+          "kwh": 18
+        },
+        {
+          "date": "2026-10-02",
+          "kwh": 20
+        },
+        {
+          "date": "2026-10-03",
+          "kwh": 22
+        }
+      ],
+      "previous_month_days": [
+        {
+          "date": "2026-09-01",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-02",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-03",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-04",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-05",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-06",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-07",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-08",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-09",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-10",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-11",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-12",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-13",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-14",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-15",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-16",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-17",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-18",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-19",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-20",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-21",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-22",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-23",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-24",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-25",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-26",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-27",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-28",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-29",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-30",
+          "kwh": 16
+        }
+      ],
+      "series": [
+        {
+          "date": "2026-09-20",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-21",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-22",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-23",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-24",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-25",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-26",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-27",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-28",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-29",
+          "kwh": 16
+        },
+        {
+          "date": "2026-09-30",
+          "kwh": 16
+        },
+        {
+          "date": "2026-10-01",
+          "kwh": 18
+        },
+        {
+          "date": "2026-10-02",
+          "kwh": 20
+        },
+        {
+          "date": "2026-10-03",
+          "kwh": 22
+        }
+      ],
+      "year_months": [
+        {
+          "month": "2026-09",
+          "kwh": 480,
+          "charge": 288
+        }
+      ],
+      "thresholds": {
+        "mode": "manual",
+        "low": 15,
+        "high": 25,
+        "unit": "kWh"
+      },
+      "status": {
+        "arrears": "normal",
+        "data": "normal"
+      },
+      "updated_at": "2026-10-04T08:00:00+08:00",
+      "_fetched_at": 1791072000
+    },
+    "color": "#1E8E5A"
+  }
+}

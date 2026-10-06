@@ -1,0 +1,773 @@
+{
+  "title": "用电与账单",
+  "button_card_templates": {
+    "electricity_metric": {
+      "show_icon": true,
+      "show_name": true,
+      "show_state": true,
+      "show_label": false,
+      "tap_action": {
+        "action": "more-info"
+      },
+      "state_display": "[[[\n const raw=entity?.state;\n const number=raw===null||raw===undefined||String(raw).trim()===''?NaN:Number(raw);\n if(!Number.isFinite(number))return variables.empty||'—';\n const decimals=variables.decimals??2;\n return `${variables.before??''}${number.toLocaleString('zh-CN',{minimumFractionDigits:decimals,maximumFractionDigits:decimals})}${variables.after??''}`;\n]]]",
+      "styles": {
+        "card": [
+          {
+            "min-height": "64px"
+          },
+          {
+            "padding": "12px"
+          },
+          {
+            "border-radius": "10px"
+          },
+          {
+            "background": "rgba(28, 31, 32, .96)"
+          },
+          {
+            "border": "1px solid rgba(255, 255, 255, .08)"
+          },
+          {
+            "border-left": "[[[ return `3px solid ${variables.accent || \"#4fa3d1\"}`; ]]]"
+          },
+          {
+            "box-shadow": "none"
+          }
+        ],
+        "grid": [
+          {
+            "grid-template-areas": "\"i s\" \"i n\""
+          },
+          {
+            "grid-template-columns": "36px 1fr"
+          },
+          {
+            "grid-template-rows": "min-content min-content"
+          },
+          {
+            "column-gap": "10px"
+          },
+          {
+            "align-items": "center"
+          }
+        ],
+        "img_cell": [
+          {
+            "width": "30px"
+          },
+          {
+            "height": "30px"
+          },
+          {
+            "border-radius": "8px"
+          },
+          {
+            "align-self": "center"
+          },
+          {
+            "justify-self": "start"
+          },
+          {
+            "background": "rgba(255, 255, 255, .08)"
+          }
+        ],
+        "icon": [
+          {
+            "width": "18px"
+          },
+          {
+            "color": "[[[ return variables.accent || \"#4fa3d1\"; ]]]"
+          }
+        ],
+        "state": [
+          {
+            "justify-self": "start"
+          },
+          {
+            "align-self": "end"
+          },
+          {
+            "font-size": "13px"
+          },
+          {
+            "font-weight": 700
+          },
+          {
+            "line-height": 1.15
+          },
+          {
+            "color": "rgba(255, 255, 255, .92)"
+          }
+        ],
+        "name": [
+          {
+            "justify-self": "start"
+          },
+          {
+            "align-self": "start"
+          },
+          {
+            "white-space": "normal"
+          },
+          {
+            "text-align": "left"
+          },
+          {
+            "font-size": "11px"
+          },
+          {
+            "line-height": 1.25
+          },
+          {
+            "color": "rgba(255, 255, 255, .58)"
+          }
+        ]
+      },
+      "variables": {
+        "a_data": "[[[\n const p='sensor.csgaccount_example_account_example_account_';\n const value=(raw)=>raw===null||raw===undefined||String(raw).trim()===''?NaN:Number(raw);\n const number=(id)=>value(states[p+id]?.state);\n const rows=(id,attr)=>{\n   const e=states[p+id];\n   if(!Number.isFinite(value(e?.state)))return [];\n   const data=e?.attributes?.[attr];\n   if(!Array.isArray(data))return [];\n   return [...new Map(data.filter(r=>/^\\d{4}-\\d{2}-\\d{2}$/.test(String(r?.date))&&Number.isFinite(value(r?.kwh))&&value(r.kwh)>=0).map(r=>[r.date,{date:r.date,kwh:value(r.kwh)}])).values()].sort((a,b)=>a.date.localeCompare(b.date));\n };\n const current=rows('this_month_total_usage','this_month_by_day');\n const previous=rows('last_month_total_usage','last_month_by_day');\n const latest=states[p+'latest_day_kwh'];\n const date=Number.isFinite(value(latest?.state))?latest?.attributes?.latest_day_date:null;\n const dateText=(d)=>typeof d==='string'&&/^\\d{4}-\\d{2}-\\d{2}$/.test(d)?`${Number(d.slice(5,7))} 月 ${Number(d.slice(8,10))} 日`:null;\n const today=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Shanghai'}));\n const todayDate=Date.UTC(today.getFullYear(),today.getMonth(),today.getDate());\n const stamp=date?Date.parse(date+'T00:00:00Z'):NaN;\n const lag=Number.isFinite(stamp)?Math.round((todayDate-stamp)/86400000):null;\n const bill=String(states[p+'last_month_total_cost']?.attributes?.billing_month||'').replace('-','');\n const billLabel=/^\\d{6}$/.test(bill)?`${bill.slice(0,4)} 年 ${Number(bill.slice(4,6))} 月`:'上月';\n let comparison=null;\n if(current.length&&previous.length){\n   const n=Number(current.at(-1).date.slice(8));\n   const a=new Map(current.map(r=>[Number(r.date.slice(8)),r.kwh]));\n   const b=new Map(previous.map(r=>[Number(r.date.slice(8)),r.kwh]));\n   const days=Array.from({length:n},(_,i)=>i+1);\n   if(days.every(d=>a.has(d)&&b.has(d))){\n     const old=days.reduce((s,d)=>s+b.get(d),0),total=days.reduce((s,d)=>s+a.get(d),0);\n     if(old>0)comparison={percent:(total/old-1)*100,days:n,previous:old};\n   }\n }\n return {current,previous,date,dateLabel:dateText(date),lag,billLabel,comparison,monthAverage:current.length?current.reduce((s,r)=>s+r.kwh,0)/current.length:null,balance:number('balance'),arrears:number('arrears'),previousUsage:number('last_month_total_usage')};\n]]]"
+      },
+      "triggers_update": [
+        "sensor.csgaccount_example_account_example_account_this_month_total_usage",
+        "sensor.csgaccount_example_account_example_account_last_month_total_usage",
+        "sensor.csgaccount_example_account_example_account_last_month_total_cost",
+        "sensor.csgaccount_example_account_example_account_latest_day_kwh",
+        "sensor.csgaccount_example_account_example_account_balance",
+        "sensor.csgaccount_example_account_example_account_arrears"
+      ]
+    },
+    "electricity_focus": {
+      "show_icon": true,
+      "show_name": true,
+      "show_state": true,
+      "show_label": true,
+      "tap_action": {
+        "action": "more-info"
+      },
+      "state_display": "[[[\n const raw=entity?.state;\n const number=raw===null||raw===undefined||String(raw).trim()===''?NaN:Number(raw);\n if(!Number.isFinite(number))return variables.empty||'—';\n const decimals=variables.decimals??2;\n return `${variables.before??''}${number.toLocaleString('zh-CN',{minimumFractionDigits:decimals,maximumFractionDigits:decimals})}${variables.after??''}`;\n]]]",
+      "styles": {
+        "card": [
+          {
+            "min-height": "148px"
+          },
+          {
+            "padding": "18px"
+          },
+          {
+            "border-radius": "12px"
+          },
+          {
+            "background": "linear-gradient(135deg, rgba(23, 37, 38, .98), rgba(18, 24, 25, .98))"
+          },
+          {
+            "border": "1px solid rgba(255, 255, 255, .08)"
+          },
+          {
+            "border-left": "[[[ return `4px solid ${variables.accent || \"#55c982\"}`; ]]]"
+          },
+          {
+            "box-shadow": "none"
+          }
+        ],
+        "grid": [
+          {
+            "grid-template-areas": "\"i n\" \"i s\" \"i l\""
+          },
+          {
+            "grid-template-columns": "44px 1fr"
+          },
+          {
+            "grid-template-rows": "min-content min-content min-content"
+          },
+          {
+            "column-gap": "12px"
+          },
+          {
+            "row-gap": "8px"
+          }
+        ],
+        "img_cell": [
+          {
+            "width": "44px"
+          },
+          {
+            "height": "44px"
+          },
+          {
+            "border-radius": "8px"
+          },
+          {
+            "align-self": "start"
+          },
+          {
+            "justify-self": "start"
+          },
+          {
+            "background": "rgba(255, 255, 255, .09)"
+          }
+        ],
+        "icon": [
+          {
+            "width": "28px"
+          },
+          {
+            "color": "[[[ return variables.accent || \"#55c982\"; ]]]"
+          }
+        ],
+        "name": [
+          {
+            "justify-self": "start"
+          },
+          {
+            "align-self": "end"
+          },
+          {
+            "font-size": "13px"
+          },
+          {
+            "font-weight": 600
+          },
+          {
+            "color": "rgba(255, 255, 255, .64)"
+          }
+        ],
+        "state": [
+          {
+            "justify-self": "start"
+          },
+          {
+            "align-self": "center"
+          },
+          {
+            "font-size": "30px"
+          },
+          {
+            "font-weight": 800
+          },
+          {
+            "line-height": 1.05
+          },
+          {
+            "color": "rgba(255, 255, 255, .94)"
+          }
+        ],
+        "label": [
+          {
+            "justify-self": "start"
+          },
+          {
+            "white-space": "normal"
+          },
+          {
+            "text-align": "left"
+          },
+          {
+            "font-size": "12px"
+          },
+          {
+            "line-height": 1.35
+          },
+          {
+            "color": "rgba(255, 255, 255, .62)"
+          }
+        ]
+      },
+      "variables": {
+        "a_data": "[[[\n const p='sensor.csgaccount_example_account_example_account_';\n const value=(raw)=>raw===null||raw===undefined||String(raw).trim()===''?NaN:Number(raw);\n const number=(id)=>value(states[p+id]?.state);\n const rows=(id,attr)=>{\n   const e=states[p+id];\n   if(!Number.isFinite(value(e?.state)))return [];\n   const data=e?.attributes?.[attr];\n   if(!Array.isArray(data))return [];\n   return [...new Map(data.filter(r=>/^\\d{4}-\\d{2}-\\d{2}$/.test(String(r?.date))&&Number.isFinite(value(r?.kwh))&&value(r.kwh)>=0).map(r=>[r.date,{date:r.date,kwh:value(r.kwh)}])).values()].sort((a,b)=>a.date.localeCompare(b.date));\n };\n const current=rows('this_month_total_usage','this_month_by_day');\n const previous=rows('last_month_total_usage','last_month_by_day');\n const latest=states[p+'latest_day_kwh'];\n const date=Number.isFinite(value(latest?.state))?latest?.attributes?.latest_day_date:null;\n const dateText=(d)=>typeof d==='string'&&/^\\d{4}-\\d{2}-\\d{2}$/.test(d)?`${Number(d.slice(5,7))} 月 ${Number(d.slice(8,10))} 日`:null;\n const today=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Shanghai'}));\n const todayDate=Date.UTC(today.getFullYear(),today.getMonth(),today.getDate());\n const stamp=date?Date.parse(date+'T00:00:00Z'):NaN;\n const lag=Number.isFinite(stamp)?Math.round((todayDate-stamp)/86400000):null;\n const bill=String(states[p+'last_month_total_cost']?.attributes?.billing_month||'').replace('-','');\n const billLabel=/^\\d{6}$/.test(bill)?`${bill.slice(0,4)} 年 ${Number(bill.slice(4,6))} 月`:'上月';\n let comparison=null;\n if(current.length&&previous.length){\n   const n=Number(current.at(-1).date.slice(8));\n   const a=new Map(current.map(r=>[Number(r.date.slice(8)),r.kwh]));\n   const b=new Map(previous.map(r=>[Number(r.date.slice(8)),r.kwh]));\n   const days=Array.from({length:n},(_,i)=>i+1);\n   if(days.every(d=>a.has(d)&&b.has(d))){\n     const old=days.reduce((s,d)=>s+b.get(d),0),total=days.reduce((s,d)=>s+a.get(d),0);\n     if(old>0)comparison={percent:(total/old-1)*100,days:n,previous:old};\n   }\n }\n return {current,previous,date,dateLabel:dateText(date),lag,billLabel,comparison,monthAverage:current.length?current.reduce((s,r)=>s+r.kwh,0)/current.length:null,balance:number('balance'),arrears:number('arrears'),previousUsage:number('last_month_total_usage')};\n]]]"
+      },
+      "triggers_update": [
+        "sensor.csgaccount_example_account_example_account_this_month_total_usage",
+        "sensor.csgaccount_example_account_example_account_last_month_total_usage",
+        "sensor.csgaccount_example_account_example_account_last_month_total_cost",
+        "sensor.csgaccount_example_account_example_account_latest_day_kwh",
+        "sensor.csgaccount_example_account_example_account_balance",
+        "sensor.csgaccount_example_account_example_account_arrears"
+      ]
+    },
+    "electricity_status": {
+      "show_icon": true,
+      "show_name": true,
+      "show_state": false,
+      "show_label": true,
+      "tap_action": {
+        "action": "more-info"
+      },
+      "styles": {
+        "card": [
+          {
+            "min-height": "64px"
+          },
+          {
+            "padding": "12px"
+          },
+          {
+            "border-radius": "10px"
+          },
+          {
+            "background": "rgba(28, 31, 32, .96)"
+          },
+          {
+            "border": "1px solid rgba(255, 255, 255, .08)"
+          },
+          {
+            "border-left": "[[[ return `3px solid ${variables.accent || \"#55c982\"}`; ]]]"
+          },
+          {
+            "box-shadow": "none"
+          }
+        ],
+        "grid": [
+          {
+            "grid-template-areas": "\"i n\" \"i l\""
+          },
+          {
+            "grid-template-columns": "36px 1fr"
+          },
+          {
+            "grid-template-rows": "min-content min-content"
+          },
+          {
+            "column-gap": "10px"
+          },
+          {
+            "align-items": "center"
+          }
+        ],
+        "img_cell": [
+          {
+            "width": "30px"
+          },
+          {
+            "height": "30px"
+          },
+          {
+            "border-radius": "8px"
+          },
+          {
+            "align-self": "center"
+          },
+          {
+            "justify-self": "start"
+          },
+          {
+            "background": "rgba(255, 255, 255, .08)"
+          }
+        ],
+        "icon": [
+          {
+            "width": "18px"
+          },
+          {
+            "color": "[[[ return variables.accent || \"#55c982\"; ]]]"
+          }
+        ],
+        "name": [
+          {
+            "justify-self": "start"
+          },
+          {
+            "align-self": "end"
+          },
+          {
+            "white-space": "normal"
+          },
+          {
+            "text-align": "left"
+          },
+          {
+            "font-size": "13px"
+          },
+          {
+            "font-weight": 700
+          },
+          {
+            "line-height": 1.15
+          },
+          {
+            "color": "rgba(255, 255, 255, .88)"
+          }
+        ],
+        "label": [
+          {
+            "justify-self": "start"
+          },
+          {
+            "align-self": "start"
+          },
+          {
+            "white-space": "normal"
+          },
+          {
+            "text-align": "left"
+          },
+          {
+            "font-size": "11px"
+          },
+          {
+            "line-height": 1.25
+          },
+          {
+            "color": "rgba(255, 255, 255, .58)"
+          }
+        ]
+      },
+      "variables": {
+        "a_data": "[[[\n const p='sensor.csgaccount_example_account_example_account_';\n const value=(raw)=>raw===null||raw===undefined||String(raw).trim()===''?NaN:Number(raw);\n const number=(id)=>value(states[p+id]?.state);\n const rows=(id,attr)=>{\n   const e=states[p+id];\n   if(!Number.isFinite(value(e?.state)))return [];\n   const data=e?.attributes?.[attr];\n   if(!Array.isArray(data))return [];\n   return [...new Map(data.filter(r=>/^\\d{4}-\\d{2}-\\d{2}$/.test(String(r?.date))&&Number.isFinite(value(r?.kwh))&&value(r.kwh)>=0).map(r=>[r.date,{date:r.date,kwh:value(r.kwh)}])).values()].sort((a,b)=>a.date.localeCompare(b.date));\n };\n const current=rows('this_month_total_usage','this_month_by_day');\n const previous=rows('last_month_total_usage','last_month_by_day');\n const latest=states[p+'latest_day_kwh'];\n const date=Number.isFinite(value(latest?.state))?latest?.attributes?.latest_day_date:null;\n const dateText=(d)=>typeof d==='string'&&/^\\d{4}-\\d{2}-\\d{2}$/.test(d)?`${Number(d.slice(5,7))} 月 ${Number(d.slice(8,10))} 日`:null;\n const today=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Shanghai'}));\n const todayDate=Date.UTC(today.getFullYear(),today.getMonth(),today.getDate());\n const stamp=date?Date.parse(date+'T00:00:00Z'):NaN;\n const lag=Number.isFinite(stamp)?Math.round((todayDate-stamp)/86400000):null;\n const bill=String(states[p+'last_month_total_cost']?.attributes?.billing_month||'').replace('-','');\n const billLabel=/^\\d{6}$/.test(bill)?`${bill.slice(0,4)} 年 ${Number(bill.slice(4,6))} 月`:'上月';\n let comparison=null;\n if(current.length&&previous.length){\n   const n=Number(current.at(-1).date.slice(8));\n   const a=new Map(current.map(r=>[Number(r.date.slice(8)),r.kwh]));\n   const b=new Map(previous.map(r=>[Number(r.date.slice(8)),r.kwh]));\n   const days=Array.from({length:n},(_,i)=>i+1);\n   if(days.every(d=>a.has(d)&&b.has(d))){\n     const old=days.reduce((s,d)=>s+b.get(d),0),total=days.reduce((s,d)=>s+a.get(d),0);\n     if(old>0)comparison={percent:(total/old-1)*100,days:n,previous:old};\n   }\n }\n return {current,previous,date,dateLabel:dateText(date),lag,billLabel,comparison,monthAverage:current.length?current.reduce((s,r)=>s+r.kwh,0)/current.length:null,balance:number('balance'),arrears:number('arrears'),previousUsage:number('last_month_total_usage')};\n]]]"
+      },
+      "triggers_update": [
+        "sensor.csgaccount_example_account_example_account_this_month_total_usage",
+        "sensor.csgaccount_example_account_example_account_last_month_total_usage",
+        "sensor.csgaccount_example_account_example_account_last_month_total_cost",
+        "sensor.csgaccount_example_account_example_account_latest_day_kwh",
+        "sensor.csgaccount_example_account_example_account_balance",
+        "sensor.csgaccount_example_account_example_account_arrears"
+      ]
+    }
+  },
+  "views": [
+    {
+      "title": "用电与账单",
+      "path": "electricity",
+      "icon": "mdi:transmission-tower",
+      "type": "sections",
+      "max_columns": 3,
+      "sections": [
+        {
+          "type": "grid",
+          "column_span": 2,
+          "cards": [
+            {
+              "type": "heading",
+              "heading": "本月用电",
+              "heading_style": "title",
+              "icon": "mdi:flash",
+              "grid_options": {
+                "columns": "full",
+                "rows": 1
+              }
+            },
+            {
+              "type": "custom:button-card",
+              "template": "electricity_focus",
+              "entity": "sensor.csgaccount_example_account_example_account_this_month_total_usage",
+              "name": "本月用电",
+              "icon": "mdi:calendar-month",
+              "variables": {
+                "accent": "#4db6ac",
+                "before": "",
+                "after": " kWh"
+              },
+              "grid_options": {
+                "columns": 12,
+                "rows": "auto"
+              },
+              "label": "[[[\n const d=variables.a_data,current=d.current;\n if(!current.length)return '等待本月用电数据';\n const date=current.at(-1).date;\n return `截至 ${Number(date.slice(5,7))} 月 ${Number(date.slice(8))} 日 · 已有 ${current.length} 天明细`;\n]]]"
+            },
+            {
+              "type": "custom:button-card",
+              "template": "electricity_focus",
+              "entity": "sensor.csgaccount_example_account_example_account_latest_day_kwh",
+              "name": "最近日用电",
+              "icon": "mdi:lightning-bolt",
+              "variables": {
+                "accent": "#f2cc5c",
+                "before": "",
+                "after": " kWh"
+              },
+              "grid_options": {
+                "columns": 12,
+                "rows": "auto"
+              },
+              "label": "[[[ const d=variables.a_data;return !d.dateLabel?'等待用电数据':`${d.dateLabel} · ${d.lag===0?'当日数据':d.lag===1?'昨日数据':d.lag>1?'距今 '+d.lag+' 天':'日期待核对'}`; ]]]"
+            },
+            {
+              "type": "custom:button-card",
+              "template": "electricity_metric",
+              "entity": "sensor.csgaccount_example_account_example_account_this_month_total_usage",
+              "name": "本月日均用电",
+              "icon": "mdi:chart-bar",
+              "variables": {
+                "accent": "#4db6ac",
+                "before": "",
+                "after": " kWh"
+              },
+              "grid_options": {
+                "columns": 12,
+                "rows": "auto"
+              },
+              "state_display": "[[[ const v=variables.a_data.monthAverage;return v===null?'—':v.toFixed(2)+' kWh'; ]]]"
+            },
+            {
+              "type": "custom:button-card",
+              "template": "electricity_metric",
+              "entity": "sensor.csgaccount_example_account_example_account_this_month_total_usage",
+              "name": "[[[ const c=variables.a_data.comparison;return c?`较上月同期（1–${c.days} 日）`:'上月同期明细待齐'; ]]]",
+              "icon": "mdi:compare-horizontal",
+              "variables": {
+                "accent": "#8ab4f8",
+                "before": "",
+                "after": ""
+              },
+              "grid_options": {
+                "columns": 12,
+                "rows": "auto"
+              },
+              "state_display": "[[[ const c=variables.a_data.comparison;return c===null?'—':`${c.percent>0?'+':''}${c.percent.toFixed(1)}%`; ]]]"
+            }
+          ]
+        },
+        {
+          "type": "grid",
+          "cards": [
+            {
+              "type": "heading",
+              "heading": "上月账单",
+              "heading_style": "title",
+              "icon": "mdi:receipt-text",
+              "grid_options": {
+                "columns": "full",
+                "rows": 1
+              }
+            },
+            {
+              "type": "custom:button-card",
+              "template": "electricity_focus",
+              "entity": "sensor.csgaccount_example_account_example_account_last_month_total_cost",
+              "name": "[[[ return variables.a_data.billLabel+'电费'; ]]]",
+              "icon": "mdi:receipt-text-check",
+              "variables": {
+                "accent": "#a78bfa",
+                "before": "CN¥",
+                "after": ""
+              },
+              "grid_options": {
+                "columns": 12,
+                "rows": "auto"
+              },
+              "label": "[[[ const d=variables.a_data,v=Number(entity?.state); if(!Number.isFinite(v))return '等待上月账单'; return `已出账${Number.isFinite(d.previousUsage)?' · 上月日历 '+d.previousUsage.toFixed(2)+' kWh':''}`; ]]]"
+            },
+            {
+              "type": "custom:button-card",
+              "template": "electricity_metric",
+              "entity": "sensor.csgaccount_example_account_example_account_balance",
+              "name": "账户余额",
+              "icon": "mdi:wallet",
+              "variables": {
+                "accent": "#55c982",
+                "before": "CN¥",
+                "after": ""
+              },
+              "grid_options": {
+                "columns": 6,
+                "rows": "auto"
+              }
+            },
+            {
+              "type": "custom:button-card",
+              "template": "electricity_metric",
+              "entity": "sensor.csgaccount_example_account_example_account_arrears",
+              "name": "待缴金额",
+              "icon": "mdi:cash-clock",
+              "variables": {
+                "accent": "[[[ return variables.a_data.arrears>0?'#f2cc5c':'#55c982'; ]]]",
+                "before": "CN¥",
+                "after": ""
+              },
+              "grid_options": {
+                "columns": 6,
+                "rows": "auto"
+              }
+            }
+          ]
+        },
+        {
+          "type": "grid",
+          "column_span": 2,
+          "cards": [
+            {
+              "type": "heading",
+              "heading": "近 14 天用电",
+              "heading_style": "title",
+              "icon": "mdi:chart-bar",
+              "grid_options": {
+                "columns": "full",
+                "rows": 1
+              }
+            },
+            {
+              "type": "custom:apexcharts-card",
+              "graph_span": "14d",
+              "span": {
+                "end": "day",
+                "offset": "-1d"
+              },
+              "header": {
+                "show": false
+              },
+              "yaxis": [
+                {
+                  "decimals": 1,
+                  "min": 0,
+                  "apex_config": {
+                    "title": {
+                      "text": "kWh"
+                    }
+                  }
+                }
+              ],
+              "apex_config": {
+                "chart": {
+                  "height": 265,
+                  "background": "transparent",
+                  "toolbar": {
+                    "show": false
+                  },
+                  "zoom": {
+                    "enabled": false
+                  }
+                },
+                "grid": {
+                  "borderColor": "rgba(255,255,255,.08)"
+                },
+                "stroke": {
+                  "width": 0
+                },
+                "fill": {
+                  "type": "solid",
+                  "opacity": 0.9
+                },
+                "legend": {
+                  "show": false
+                },
+                "tooltip": {
+                  "theme": "dark",
+                  "shared": true
+                },
+                "xaxis": {
+                  "labels": {
+                    "datetimeUTC": false,
+                    "format": "M/d"
+                  }
+                },
+                "plotOptions": {
+                  "bar": {
+                    "columnWidth": "55%",
+                    "borderRadius": 3
+                  }
+                },
+                "noData": {
+                  "text": "等待用电明细"
+                }
+              },
+              "series": [
+                {
+                  "entity": "sensor.csgaccount_example_account_example_account_this_month_total_usage",
+                  "name": "日用电",
+                  "type": "column",
+                  "color": "#69bdb2",
+                  "extend_to": false,
+                  "data_generator": "const p='sensor.csgaccount_example_account_example_account_';\nconst numeric=(v)=>v!==null&&v!==undefined&&String(v).trim()!==''&&Number.isFinite(Number(v));\nconst from=(id,attr)=>{const e=hass.states[p+id];return numeric(e?.state)&&Array.isArray(e?.attributes?.[attr])?e.attributes[attr]:[];};\nconst rows=[...from('last_month_total_usage','last_month_by_day'),...from('this_month_total_usage','this_month_by_day')];\nreturn [...new Map(rows.filter(r=>/^\\d{4}-\\d{2}-\\d{2}$/.test(String(r?.date))&&numeric(r?.kwh)&&Number(r.kwh)>=0).map(r=>[r.date,r])).values()].sort((a,b)=>a.date.localeCompare(b.date)).map(r=>[Date.parse(r.date+'T12:00:00+08:00'),Number(r.kwh)]).filter(([time])=>time>=start.getTime()&&time<=end.getTime());"
+                }
+              ],
+              "grid_options": {
+                "columns": "full",
+                "rows": 5
+              }
+            }
+          ]
+        },
+        {
+          "type": "grid",
+          "cards": [
+            {
+              "type": "heading",
+              "heading": "年度账单",
+              "heading_style": "title",
+              "icon": "mdi:chart-box-outline",
+              "grid_options": {
+                "columns": "full",
+                "rows": 1
+              }
+            },
+            {
+              "type": "custom:button-card",
+              "template": "electricity_metric",
+              "entity": "sensor.csgaccount_example_account_example_account_this_year_total_usage",
+              "name": "今年账单用电",
+              "icon": "mdi:chart-line",
+              "variables": {
+                "accent": "#4db6ac",
+                "after": " kWh",
+                "decimals": 0
+              },
+              "grid_options": {
+                "columns": 6,
+                "rows": 1
+              }
+            },
+            {
+              "type": "custom:button-card",
+              "template": "electricity_metric",
+              "entity": "sensor.csgaccount_example_account_example_account_this_year_total_cost",
+              "name": "今年已出账电费",
+              "icon": "mdi:cash-clock",
+              "variables": {
+                "accent": "#f2cc5c",
+                "before": "CN¥"
+              },
+              "grid_options": {
+                "columns": 6,
+                "rows": 1
+              }
+            },
+            {
+              "type": "custom:button-card",
+              "template": "electricity_metric",
+              "entity": "sensor.csgaccount_example_account_example_account_last_year_total_usage",
+              "name": "去年全年用电",
+              "icon": "mdi:calendar-range",
+              "variables": {
+                "accent": "#a78bfa",
+                "after": " kWh",
+                "decimals": 0
+              },
+              "grid_options": {
+                "columns": 6,
+                "rows": 1
+              }
+            },
+            {
+              "type": "custom:button-card",
+              "template": "electricity_metric",
+              "entity": "sensor.csgaccount_example_account_example_account_last_year_total_cost",
+              "name": "去年全年电费",
+              "icon": "mdi:receipt-text-clock",
+              "variables": {
+                "accent": "#ef5350",
+                "before": "CN¥"
+              },
+              "grid_options": {
+                "columns": 6,
+                "rows": 1
+              }
+            },
+            {
+              "type": "custom:button-card",
+              "template": "electricity_status",
+              "entity": "sensor.electricity_data_status",
+              "icon": "mdi:database-clock",
+              "name": "[[[ const d=variables.a_data;return d.dateLabel?'用电更新至 '+d.dateLabel:'用电数据待同步'; ]]]",
+              "label": "[[[ const d=variables.a_data;return d.lag===null?'等待南网返回用电明细':d.lag>1?'南网尚未更新最近 '+(d.lag-1)+' 天的用电明细':'最近日报已同步'; ]]]",
+              "variables": {
+                "accent": "[[[ return variables.a_data.lag===null?'#8b949e':variables.a_data.lag>1?'#f2cc5c':'#55c982'; ]]]"
+              },
+              "grid_options": {
+                "columns": 12,
+                "rows": "auto"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

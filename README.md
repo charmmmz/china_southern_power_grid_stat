@@ -54,6 +54,9 @@
 
 ### 数据口径与异常处理
 
+可选的 Home Assistant 仪表盘和 Tesserae 用电组件见 [仪表盘示例](examples/README.md)。
+它们需要单独配置，HACS 升级集成不会自动替换已有仪表盘。
+
 每日用电量来自 App 通道的 `charge/queryElectricityCalendar`，按接口给出的日期归属，
 并按中国时区判断昨日和月份。空白日期代表尚未提供，不是 0 kWh。月度传感器提供
 `latest_day_date`、`reported_days`、`usage_month`、`data_source`，便于界面显示数据进度。
@@ -184,7 +187,6 @@ Home Assistant 配置目录创建 `china_southern_power_grid_stat_corrections.js
 - [【抄作业】电费插件(NR流)-南网](https://bbs.hassbian.com/thread-18122-1-1.html)
 
 自定义集成教程参考：[Building a Home Assistant Custom Component Part 1: Project Structure and Basics](https://aarongodfrey.dev/home%20automation/building_a_home_assistant_custom_component_part_1/)
-
 
 
 
