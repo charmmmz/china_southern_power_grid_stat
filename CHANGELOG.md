@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-06
+
 ### Fixed
 
 - Restore daily and monthly energy readings using the electricity calendar when legacy daily endpoints return no data.
@@ -33,5 +35,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Point installation and documentation links to the maintained fork.
 
-[Unreleased]: https://github.com/charmmmz/china_southern_power_grid_stat/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/charmmmz/china_southern_power_grid_stat/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/charmmmz/china_southern_power_grid_stat/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/charmmmz/china_southern_power_grid_stat/compare/v1.2.0...v1.2.1
