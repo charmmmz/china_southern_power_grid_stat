@@ -8,6 +8,7 @@ import logging
 import time
 import traceback
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 from typing import Any
 
 import async_timeout
@@ -33,6 +34,7 @@ from .const import (
     ATTR_KEY_APPLIED_CORRECTIONS,
     ATTR_KEY_DATA_QUALITY,
     ATTR_KEY_LAST_MONTH_BY_DAY,
+    ATTR_KEY_LAST_MONTH_BILL,
     ATTR_KEY_LAST_YEAR_BY_MONTH,
     ATTR_KEY_LATEST_DAY_DATE,
     ATTR_KEY_THIS_MONTH_BY_DAY,
@@ -44,8 +46,6 @@ from .const import (
     CORRECTIONS_FILENAME,
     DATA_KEY_LAST_UPDATE_DAY,
     DOMAIN,
-    SETTING_LAST_MONTH_UPDATE_DAY_THRESHOLD,
-    SETTING_LAST_YEAR_UPDATE_DAY_THRESHOLD,
     SETTING_UPDATE_TIMEOUT,
     STATE_UPDATE_UNCHANGED,
     SUFFIX_ARR,
@@ -74,12 +74,9 @@ from .data_quality import (
 from .csg_client import (
     JSON_KEY_METERING_POINT_NUMBER,
     WF_ATTR_CHARGE,
+    WF_ATTR_MONTH,
     WF_ATTR_DATE,
     WF_ATTR_KWH,
-    WF_ATTR_LADDER,
-    WF_ATTR_LADDER_REMAINING_KWH,
-    WF_ATTR_LADDER_START_DATE,
-    WF_ATTR_LADDER_TARIFF,
     CSGAPIError,
     CSGClient,
     CSGElectricityAccount,
@@ -87,6 +84,17 @@ from .csg_client import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Keep existing entity IDs/history, but never populate fields the sources lack.
+UNSUPPORTED_SUFFIXES = frozenset(
+    {
+        SUFFIX_LATEST_DAY_COST,
+        SUFFIX_THIS_MONTH_COST,
+        SUFFIX_CURRENT_LADDER,
+        SUFFIX_CURRENT_LADDER_REMAINING_KWH,
+        SUFFIX_CURRENT_LADDER_TARIFF,
+    }
+)
 
 
 async def async_setup_entry(
@@ -189,12 +197,12 @@ async def async_setup_entry(
                 SUFFIX_LAST_MONTH_KWH,
                 extra_state_attributes_key=ATTR_KEY_LAST_MONTH_BY_DAY,
             ),
-            # last month's total cost, with extra attributes about daily usage
+            # last month's settled bill, separate from calendar usage
             CSGCostSensor(
                 coordinator,
                 ele_account_number,
                 SUFFIX_LAST_MONTH_COST,
-                extra_state_attributes_key=ATTR_KEY_LAST_MONTH_BY_DAY,
+                extra_state_attributes_key=ATTR_KEY_LAST_MONTH_BILL,
             ),
         ]
 
@@ -229,6 +237,10 @@ class CSGBaseSensor(
         self._account_number = account_number
 
         self._entity_suffix = entity_suffix
+        self._attr_available = False
+        self._attr_entity_registry_enabled_default = (
+            entity_suffix not in UNSUPPORTED_SUFFIXES
+        )
         self._attr_extra_state_attributes = {}
         self._extra_state_attributes_key = extra_state_attributes_key
 
@@ -243,6 +255,11 @@ class CSGBaseSensor(
     @property
     def should_poll(self) -> bool:
         return False
+
+    @property
+    def available(self) -> bool:
+        """A healthy coordinator does not imply every individual field exists."""
+        return self._attr_available and self.coordinator.last_update_success
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -279,40 +296,20 @@ class CSGBaseSensor(
             return
 
         new_native_value = account_data.get(self._entity_suffix)
-        if new_native_value is None:
-            _LOGGER.warning("%s data not found in coordinator data", self.unique_id)
-            self._attr_available = False
-            self.async_write_ha_state()
-            return
-
-        if new_native_value == STATE_UNAVAILABLE:
-            _LOGGER.debug("%s data is unavailable", self.unique_id)
-            self.async_write_ha_state()
-            self._attr_available = False
-            return
-
-        # from this point the value is available
-        self._attr_available = True
-
         if new_native_value == STATE_UPDATE_UNCHANGED:
-            # no update for this sensor, skip
-            _LOGGER.debug("%s doesn't need to be updated, skip", self.unique_id)
             return
-
-        # from this point, `new_native_value` is a true value
-        self._attr_native_value = new_native_value
 
         if self._extra_state_attributes_key:
-            new_attributes = account_data.get(self._extra_state_attributes_key)
-            if new_attributes is None:
-                new_attributes = {}
-                _LOGGER.warning(
-                    "%s attribute %s not found in coordinator data",
-                    self.unique_id,
-                    self._extra_state_attributes_key,
-                )
-            self._attr_extra_state_attributes = new_attributes
-        _LOGGER.debug("%s state update done!", self.unique_id)
+            self._attr_extra_state_attributes = account_data.get(
+                self._extra_state_attributes_key, {}
+            )
+        self._attr_available = new_native_value not in (None, STATE_UNAVAILABLE)
+        self._attr_native_value = new_native_value if self._attr_available else None
+        if self._entity_suffix in UNSUPPORTED_SUFFIXES:
+            self._attr_extra_state_attributes = {
+                "unavailable_reason": "not_provided_by_source"
+            }
+        # Availability must change before publishing, otherwise a stale value survives.
         self.async_write_ha_state()
 
 
@@ -358,14 +355,13 @@ class CSGCoordinator(DataUpdateCoordinator):
             ),
         )
         self._client: CSGClient | None = None
-        self._if_update_last_month = True
-        self._if_update_last_year = True
         self._this_day = None
         self._this_year = None
         self._this_month_ym = None
         self._last_year = None
         self._last_month_ym = None
-        self._this_month_update_completed_flag = asyncio.Event()
+        self._last_year_cache = {}
+        self._today = None
         self._gathered_data = {}
         self._daily_corrections = {}
 
@@ -394,6 +390,10 @@ class CSGCoordinator(DataUpdateCoordinator):
                 by_day,
                 self._daily_corrections.get(account_number, {}),
             )
+            by_day = [
+                {WF_ATTR_DATE: row[WF_ATTR_DATE], WF_ATTR_KWH: row[WF_ATTR_KWH]}
+                for row in by_day
+            ]
             if applied_dates:
                 total_kwh = corrected_month_total(by_day)
                 _LOGGER.warning(
@@ -487,573 +487,143 @@ class CSGCoordinator(DataUpdateCoordinator):
         self._gathered_data[account.account_number][SUFFIX_BAL] = balance
         self._gathered_data[account.account_number][SUFFIX_ARR] = arrears
 
-    async def _async_update_yesterday_kwh(self, account: CSGElectricityAccount):
-        """Update yesterday's kwh"""
-        success, result = await self._async_fetch(
-            self._client.get_yesterday_kwh,
-            account,
-        )
-        if success and result is not None:
-            yesterday_kwh = result
-            _LOGGER.debug(
-                "Updated yesterday's kwh for account %s: %s",
-                account.account_number,
-                result,
-            )
-        else:
-            yesterday_kwh = STATE_UNAVAILABLE
-            _LOGGER.error(
-                "Error updating yesterday's kwh for account %s: %s",
-                account.account_number,
-                result,
-            )
-        self._gathered_data[account.account_number][
-            SUFFIX_YESTERDAY_KWH
-        ] = yesterday_kwh
-
-    async def _async_update_this_year_stats(self, account: CSGElectricityAccount):
-        """Update this year's data"""
-        success, result = await self._async_fetch(
-            self._client.get_year_month_stats, account, self._this_year
-        )
-        if success:
-            (
-                this_year_cost,
-                this_year_kwh,
-                this_year_by_month,
-            ) = result
-
-            _LOGGER.debug(
-                "Updated this year's data for account %s: %s",
-                account.account_number,
-                result,
-            )
-        else:
-            _LOGGER.error(
-                "Error updating this year's data for account %s: %s",
-                account.account_number,
-                result,
-            )
-            this_year_cost, this_year_kwh, this_year_by_month = (
-                STATE_UNAVAILABLE,
-                STATE_UNAVAILABLE,
-                STATE_UNAVAILABLE,
-            )
-        self._gathered_data[account.account_number][
-            SUFFIX_THIS_YEAR_KWH
-        ] = this_year_kwh
-        self._gathered_data[account.account_number][
-            SUFFIX_THIS_YEAR_COST
-        ] = this_year_cost
-        self._gathered_data[account.account_number][ATTR_KEY_THIS_YEAR_BY_MONTH] = {
-            ATTR_KEY_THIS_YEAR_BY_MONTH: this_year_by_month
-        }
-
-    async def _async_update_last_year_stats(self, account: CSGElectricityAccount):
-        """Update last year's data"""
-        if not self._if_update_last_year:
-            self._gathered_data[account.account_number][
-                SUFFIX_LAST_YEAR_KWH
-            ] = STATE_UPDATE_UNCHANGED
-            self._gathered_data[account.account_number][
-                SUFFIX_LAST_YEAR_COST
-            ] = STATE_UPDATE_UNCHANGED
-            self._gathered_data[account.account_number][ATTR_KEY_LAST_YEAR_BY_MONTH] = {
-                ATTR_KEY_LAST_YEAR_BY_MONTH: STATE_UPDATE_UNCHANGED
-            }
-            _LOGGER.debug(
-                "Last year's data for account %s: no need to update",
-                account.account_number,
-            )
-            return
-        success, result = await self._async_fetch(
-            self._client.get_year_month_stats, account, self._last_year
-        )
-        if success:
-            (
-                last_year_cost,
-                last_year_kwh,
-                last_year_by_month,
-            ) = result
-
-            _LOGGER.debug(
-                "Updated last year's data for account %s: %s",
-                account.account_number,
-                result,
-            )
-        else:
-            _LOGGER.error(
-                "Error updating last year's data for account %s: %s",
-                account.account_number,
-                result,
-            )
-            last_year_cost, last_year_kwh, last_year_by_month = (
-                STATE_UNAVAILABLE,
-                STATE_UNAVAILABLE,
-                STATE_UNAVAILABLE,
-            )
-        self._gathered_data[account.account_number][
-            SUFFIX_LAST_YEAR_KWH
-        ] = last_year_kwh
-        self._gathered_data[account.account_number][
-            SUFFIX_LAST_YEAR_COST
-        ] = last_year_cost
-        self._gathered_data[account.account_number][ATTR_KEY_LAST_YEAR_BY_MONTH] = {
-            ATTR_KEY_LAST_YEAR_BY_MONTH: last_year_by_month
-        }
-
-    @staticmethod
-    def merge_by_day_data(
-        by_day_from_cost: list | str,
-        kwh_from_cost: float | str,
-        by_day_from_usage: list | str,
-        kwh_from_usage: float | str,
-    ) -> (list | str, float | str):
-        """Merge daily data and keep the total from the selected source."""
-        if (
-            by_day_from_cost == STATE_UNAVAILABLE
-            and by_day_from_usage == STATE_UNAVAILABLE
-        ):
-            return STATE_UNAVAILABLE, STATE_UNAVAILABLE
-        elif by_day_from_cost == STATE_UNAVAILABLE:
-            return by_day_from_usage, kwh_from_usage
-        elif by_day_from_usage == STATE_UNAVAILABLE:
-            return by_day_from_cost, kwh_from_cost
-
-        cost_latest_date = max(
-            (str(item.get(WF_ATTR_DATE, "")) for item in by_day_from_cost),
-            default="",
-        )
-        usage_latest_date = max(
-            (str(item.get(WF_ATTR_DATE, "")) for item in by_day_from_usage),
-            default="",
-        )
-        if cost_latest_date >= usage_latest_date:
-            return by_day_from_cost, kwh_from_cost
-
-        cost_by_date = {
-            str(item.get(WF_ATTR_DATE, "")): item for item in by_day_from_cost
-        }
-        merged_usage = []
-        for usage_item in by_day_from_usage:
-            merged_item = dict(usage_item)
-            cost_item = cost_by_date.get(str(usage_item.get(WF_ATTR_DATE, "")), {})
-            if WF_ATTR_CHARGE in cost_item:
-                merged_item[WF_ATTR_CHARGE] = cost_item[WF_ATTR_CHARGE]
-            merged_usage.append(merged_item)
-        return merged_usage, kwh_from_usage
-
-    async def _async_update_this_month_stats_and_ladder(
-        self, account: CSGElectricityAccount
+    async def _async_update_year_stats(
+        self, account: CSGElectricityAccount, *, previous=False
     ):
-        """Update this month's usage, cost and ladder"""
-        # fetch usage and cost in parallel
-        task_fetch_usage = asyncio.create_task(
-            self._async_fetch(
-                self._client.get_month_daily_usage_detail, account, self._this_month_ym
-            )
-        )
-        task_fetch_cost = asyncio.create_task(
-            self._async_fetch(
-                self._client.get_month_daily_cost_detail, account, self._this_month_ym
-            )
-        )
-
-        results = await asyncio.gather(task_fetch_usage, task_fetch_cost)
-
-        (success_usage, result_usage), (success_cost, result_cost) = results
-
-        if success_usage:
-            this_month_kwh_from_usage, this_month_by_day_from_usage = result_usage
-            (
-                this_month_kwh_from_usage,
-                this_month_by_day_from_usage,
-                usage_corrections,
-            ) = self._prepare_month_source(
-                account.account_number,
-                "daily usage API",
-                this_month_kwh_from_usage,
-                this_month_by_day_from_usage,
-            )
+        """Refresh bills; cache the preceding calendar year for at most one day."""
+        year = self._last_year if previous else self._this_year
+        cache_key = (account.account_number, year)
+        cached = self._last_year_cache.get(cache_key)
+        if previous and cached and cached[0] == self._today:
+            success, result = True, cached[1]
         else:
-            this_month_kwh_from_usage = STATE_UNAVAILABLE
-            this_month_by_day_from_usage = STATE_UNAVAILABLE
-            usage_corrections = []
-
-        if success_cost:
-            (
-                this_month_cost,
-                this_month_kwh_from_cost,
-                ladder,
-                this_month_by_day_from_cost,
-            ) = result_cost
-            # special processing
-            if this_month_cost is None:
-                this_month_cost = STATE_UNAVAILABLE
-            if this_month_kwh_from_cost is None:
-                this_month_kwh_from_cost = STATE_UNAVAILABLE
-            if this_month_kwh_from_cost != STATE_UNAVAILABLE:
-                (
-                    this_month_kwh_from_cost,
-                    this_month_by_day_from_cost,
-                    cost_corrections,
-                ) = self._prepare_month_source(
-                    account.account_number,
-                    "daily cost API",
-                    this_month_kwh_from_cost,
-                    this_month_by_day_from_cost,
-                )
-            else:
-                cost_corrections = []
-            if this_month_kwh_from_cost == STATE_UNAVAILABLE:
-                this_month_cost = STATE_UNAVAILABLE
-                # Never merge daily rows from a rejected cost response back into
-                # the validated usage response. The API can return a missing
-                # monthly kWh total alongside malformed per-day charges.
-                this_month_by_day_from_cost = STATE_UNAVAILABLE
-            ladder_stage = (
-                ladder[WF_ATTR_LADDER]
-                if ladder[WF_ATTR_LADDER] is not None
-                else STATE_UNAVAILABLE
+            success, result = await self._async_fetch(
+                self._client.get_year_month_stats, account, year
             )
-            ladder_remaining_kwh = (
-                ladder[WF_ATTR_LADDER_REMAINING_KWH]
-                if ladder[WF_ATTR_LADDER_REMAINING_KWH] is not None
-                else STATE_UNAVAILABLE
-            )
-            ladder_tariff = (
-                ladder[WF_ATTR_LADDER_TARIFF]
-                if ladder[WF_ATTR_LADDER_TARIFF] is not None
-                else STATE_UNAVAILABLE
-            )
-            ladder_start_date = (
-                ladder[WF_ATTR_LADDER_START_DATE]
-                if ladder[WF_ATTR_LADDER_START_DATE] is not None
-                else STATE_UNAVAILABLE
-            )
+            if previous and success:
+                self._last_year_cache[cache_key] = (self._today, result)
+        if success:
+            cost, kwh, by_month = result
         else:
-            cost_corrections = []
-            (
-                this_month_cost,
-                this_month_kwh_from_cost,
-                this_month_by_day_from_cost,
-                ladder_stage,
-                ladder_remaining_kwh,
-                ladder_tariff,
-                ladder_start_date,
-            ) = (
-                STATE_UNAVAILABLE,
-                STATE_UNAVAILABLE,
-                STATE_UNAVAILABLE,
-                STATE_UNAVAILABLE,
-                STATE_UNAVAILABLE,
-                STATE_UNAVAILABLE,
-                STATE_UNAVAILABLE,
-            )
-        this_month_by_day, this_month_kwh = self.merge_by_day_data(
-            by_day_from_usage=this_month_by_day_from_usage,
-            kwh_from_usage=this_month_kwh_from_usage,
-            by_day_from_cost=this_month_by_day_from_cost,
-            kwh_from_cost=this_month_kwh_from_cost,
+            cost, kwh, by_month = STATE_UNAVAILABLE, STATE_UNAVAILABLE, []
+        attr = ATTR_KEY_LAST_YEAR_BY_MONTH if previous else ATTR_KEY_THIS_YEAR_BY_MONTH
+        data = self._gathered_data[account.account_number]
+        data[SUFFIX_LAST_YEAR_COST if previous else SUFFIX_THIS_YEAR_COST] = cost
+        data[SUFFIX_LAST_YEAR_KWH if previous else SUFFIX_THIS_YEAR_KWH] = kwh
+        data[attr] = {attr: by_month, "data_source": "annual_billing"}
+
+    async def _async_update_month_usage(
+        self, account: CSGElectricityAccount, *, previous=False
+    ):
+        """Refresh calendar energy, independent of bill availability."""
+        year_month = self._last_month_ym if previous else self._this_month_ym
+        attr = ATTR_KEY_LAST_MONTH_BY_DAY if previous else ATTR_KEY_THIS_MONTH_BY_DAY
+        suffix = SUFFIX_LAST_MONTH_KWH if previous else SUFFIX_THIS_MONTH_KWH
+        success, result = await self._async_fetch(
+            self._client.get_month_daily_usage_detail, account, year_month
         )
-
-        if this_month_by_day == STATE_UNAVAILABLE:
-            # need last month's data to update `latest_day` entity
-            self._if_update_last_month = True
-
-        self._gathered_data[account.account_number][
-            SUFFIX_THIS_MONTH_KWH
-        ] = this_month_kwh
-        self._gathered_data[account.account_number][
-            SUFFIX_THIS_MONTH_COST
-        ] = this_month_cost
-        self._gathered_data[account.account_number][ATTR_KEY_THIS_MONTH_BY_DAY] = {
-            ATTR_KEY_THIS_MONTH_BY_DAY: this_month_by_day,
+        total, rows, corrections = STATE_UNAVAILABLE, [], []
+        if success:
+            total, rows, corrections = self._prepare_month_source(
+                account.account_number, "electricity calendar", *result
+            )
+            # No reported days is absence, not evidence of zero consumption.
+            if not isinstance(rows, list) or not rows:
+                total, rows = STATE_UNAVAILABLE, []
+            elif any(row[WF_ATTR_DATE] > self._today.isoformat() for row in rows):
+                _LOGGER.error("Rejected future dated electricity calendar data")
+                total, rows, corrections = STATE_UNAVAILABLE, [], []
+        data = self._gathered_data[account.account_number]
+        data[suffix] = total
+        data[attr] = {
+            attr: rows,
+            "data_source": "electricity_calendar",
+            "usage_month": f"{year_month[0]}-{year_month[1]:02d}",
+            ATTR_KEY_LATEST_DAY_DATE: rows[-1][WF_ATTR_DATE] if rows else None,
+            "reported_days": len(rows),
             ATTR_KEY_DATA_QUALITY: (
-                "corrected" if usage_corrections or cost_corrections else "source"
+                "unavailable"
+                if total == STATE_UNAVAILABLE
+                else "corrected"
+                if corrections
+                else "api"
             ),
-            ATTR_KEY_APPLIED_CORRECTIONS: sorted(
-                set(usage_corrections + cost_corrections)
-            ),
+            ATTR_KEY_APPLIED_CORRECTIONS: corrections,
         }
-        self._gathered_data[account.account_number][
-            SUFFIX_CURRENT_LADDER
-        ] = ladder_stage
-        self._gathered_data[account.account_number][
-            SUFFIX_CURRENT_LADDER_REMAINING_KWH
-        ] = ladder_remaining_kwh
-        self._gathered_data[account.account_number][
-            SUFFIX_CURRENT_LADDER_TARIFF
-        ] = ladder_tariff
-        self._gathered_data[account.account_number][
-            ATTR_KEY_CURRENT_LADDER_START_DATE
-        ] = {ATTR_KEY_CURRENT_LADDER_START_DATE: ladder_start_date}
 
-        self._this_month_update_completed_flag.set()
-
-    async def _async_update_last_month_stats(self, account: CSGElectricityAccount):
-        """Update last month's usage and cost"""
-        if not self._if_update_last_month:
-            # original condition, don't need to update last month's data
-
-            # wait for this month's data to be updated to see if last month's data is needed
-            await self._this_month_update_completed_flag.wait()
-
-            if not self._if_update_last_month:
-                # don't need last month's data for latest day
-                _LOGGER.debug(
-                    "Last month's data for account %s: no need to update",
-                    account.account_number,
-                )
-                self._gathered_data[account.account_number][
-                    SUFFIX_LAST_MONTH_KWH
-                ] = STATE_UPDATE_UNCHANGED
-                self._gathered_data[account.account_number][
-                    SUFFIX_LAST_MONTH_COST
-                ] = STATE_UPDATE_UNCHANGED
-                self._gathered_data[account.account_number][
-                    ATTR_KEY_LAST_MONTH_BY_DAY
-                ] = {ATTR_KEY_LAST_MONTH_BY_DAY: STATE_UPDATE_UNCHANGED}
-                return
-
-        # continue to update last month's data
-        # fetch usage and cost in parallel
-        task_fetch_usage = asyncio.create_task(
-            self._async_fetch(
-                self._client.get_month_daily_usage_detail, account, self._last_month_ym
-            )
+    def _update_last_month_bill(self, account: CSGElectricityAccount):
+        """Match only the previous calendar month's bill, including January rollover."""
+        data = self._gathered_data[account.account_number]
+        year, month = self._last_month_ym
+        billing_month = f"{year}-{month:02d}"
+        attr = (
+            ATTR_KEY_THIS_YEAR_BY_MONTH
+            if year == self._this_year
+            else ATTR_KEY_LAST_YEAR_BY_MONTH
         )
-        task_fetch_cost = asyncio.create_task(
-            self._async_fetch(
-                self._client.get_month_daily_cost_detail, account, self._last_month_ym
-            )
+        rows = data[attr][attr]
+        matching = [
+            row
+            for row in rows
+            if str(row.get(WF_ATTR_MONTH))
+            in (billing_month, billing_month.replace("-", ""))
+        ]
+        bill = matching[0] if len(matching) == 1 else {}
+        charge = bill.get(WF_ATTR_CHARGE)
+        data[SUFFIX_LAST_MONTH_COST] = (
+            charge if charge is not None else STATE_UNAVAILABLE
         )
-
-        results = await asyncio.gather(task_fetch_usage, task_fetch_cost)
-
-        (success_usage, result_usage), (success_cost, result_cost) = results
-
-        if success_usage:
-            last_month_kwh_from_usage, last_month_by_day_from_usage = result_usage
-            (
-                last_month_kwh_from_usage,
-                last_month_by_day_from_usage,
-                _,
-            ) = self._prepare_month_source(
-                account.account_number,
-                "last-month daily usage API",
-                last_month_kwh_from_usage,
-                last_month_by_day_from_usage,
-            )
-        else:
-            last_month_kwh_from_usage = STATE_UNAVAILABLE
-            last_month_by_day_from_usage = STATE_UNAVAILABLE
-
-        if success_cost:
-            (
-                last_month_cost,
-                last_month_kwh_from_cost,
-                _,  # ladder is discarded
-                last_month_by_day_from_cost,
-            ) = result_cost
-
-            # for last month, it's safe to calculate total kwh from cost
-            if not last_month_cost:
-                last_month_cost = sum(
-                    d[WF_ATTR_CHARGE] for d in last_month_by_day_from_cost
-                )
-            if not last_month_kwh_from_cost:
-                last_month_kwh_from_cost = sum(
-                    d[WF_ATTR_KWH] for d in last_month_by_day_from_cost
-                )
-            (
-                last_month_kwh_from_cost,
-                last_month_by_day_from_cost,
-                _,
-            ) = self._prepare_month_source(
-                account.account_number,
-                "last-month daily cost API",
-                last_month_kwh_from_cost,
-                last_month_by_day_from_cost,
-            )
-        else:
-            (
-                last_month_cost,
-                last_month_kwh_from_cost,
-                last_month_by_day_from_cost,
-            ) = (
-                STATE_UNAVAILABLE,
-                STATE_UNAVAILABLE,
-                STATE_UNAVAILABLE,
-            )
-        last_month_by_day, last_month_kwh = self.merge_by_day_data(
-            by_day_from_usage=last_month_by_day_from_usage,
-            kwh_from_usage=last_month_kwh_from_usage,
-            by_day_from_cost=last_month_by_day_from_cost,
-            kwh_from_cost=last_month_kwh_from_cost,
-        )
-
-        self._gathered_data[account.account_number][
-            SUFFIX_LAST_MONTH_KWH
-        ] = last_month_kwh
-        self._gathered_data[account.account_number][
-            SUFFIX_LAST_MONTH_COST
-        ] = last_month_cost
-        self._gathered_data[account.account_number][ATTR_KEY_LAST_MONTH_BY_DAY] = {
-            ATTR_KEY_LAST_MONTH_BY_DAY: last_month_by_day
+        data[ATTR_KEY_LAST_MONTH_BILL] = {
+            "billing_month": billing_month,
+            "billing_kwh": bill.get(WF_ATTR_KWH),
+            "data_source": "annual_billing",
         }
 
     def _update_latest_day(self, account: CSGElectricityAccount):
-        this_month_by_day = self._gathered_data[account.account_number][
-            ATTR_KEY_THIS_MONTH_BY_DAY
-        ][ATTR_KEY_THIS_MONTH_BY_DAY]
-        last_month_by_day = self._gathered_data[account.account_number][
-            ATTR_KEY_LAST_MONTH_BY_DAY
-        ][ATTR_KEY_LAST_MONTH_BY_DAY]
-
-        if (
-            this_month_by_day == STATE_UNAVAILABLE
-            and last_month_by_day == STATE_UNAVAILABLE
-        ):
-            latest_day_kwh = STATE_UNAVAILABLE
-            latest_day_cost = STATE_UNAVAILABLE
-            latest_day_date = STATE_UNAVAILABLE
-        else:
-            if this_month_by_day != STATE_UNAVAILABLE and len(this_month_by_day) >= 1:
-                # we have this month's data, use the latest day
-                latest_day_kwh = this_month_by_day[-1][WF_ATTR_KWH]
-                latest_day_cost = (
-                    this_month_by_day[-1].get(WF_ATTR_CHARGE) or STATE_UNAVAILABLE
-                )
-                latest_day_date = this_month_by_day[-1][WF_ATTR_DATE]
-            else:
-                # this month isn't available yet (typically during the first 3 days)
-                # let's try last month
-                if (
-                    last_month_by_day
-                    not in [
-                        STATE_UNAVAILABLE,
-                        STATE_UPDATE_UNCHANGED,
-                    ]
-                    and len(last_month_by_day) >= 1
-                ):
-                    latest_day_kwh = last_month_by_day[-1][WF_ATTR_KWH]
-                    latest_day_cost = STATE_UNAVAILABLE
-                    latest_day_date = last_month_by_day[-1][WF_ATTR_DATE]
-                else:
-                    _LOGGER.error(
-                        "Ele account %s, no latest day data available",
-                        account.account_number,
-                    )
-                    latest_day_kwh = STATE_UNAVAILABLE
-                    latest_day_cost = STATE_UNAVAILABLE
-                    latest_day_date = STATE_UNAVAILABLE
-        self._gathered_data[account.account_number][
-            SUFFIX_LATEST_DAY_KWH
-        ] = latest_day_kwh
-        self._gathered_data[account.account_number][
-            SUFFIX_LATEST_DAY_COST
-        ] = latest_day_cost
-        self._gathered_data[account.account_number][ATTR_KEY_LATEST_DAY_DATE] = {
-            ATTR_KEY_LATEST_DAY_DATE: latest_day_date
+        """Derive latest and yesterday from actual reported dates, without extra calls."""
+        data = self._gathered_data[account.account_number]
+        rows = (
+            data[ATTR_KEY_LAST_MONTH_BY_DAY][ATTR_KEY_LAST_MONTH_BY_DAY]
+            + data[ATTR_KEY_THIS_MONTH_BY_DAY][ATTR_KEY_THIS_MONTH_BY_DAY]
+        )
+        rows.sort(key=lambda row: row[WF_ATTR_DATE])
+        latest = rows[-1] if rows else {}
+        data[SUFFIX_LATEST_DAY_KWH] = latest.get(WF_ATTR_KWH, STATE_UNAVAILABLE)
+        data[ATTR_KEY_LATEST_DAY_DATE] = {
+            ATTR_KEY_LATEST_DAY_DATE: latest.get(WF_ATTR_DATE),
+            "data_source": "electricity_calendar",
         }
+        yesterday = (self._today - timedelta(days=1)).isoformat()
+        data[SUFFIX_YESTERDAY_KWH] = next(
+            (row[WF_ATTR_KWH] for row in rows if row[WF_ATTR_DATE] == yesterday),
+            STATE_UNAVAILABLE,
+        )
 
     def _update_states(self):
-        current_dt = datetime.datetime.now()
-        this_year, this_month, this_day = (
-            current_dt.year,
-            current_dt.month,
-            current_dt.day,
-        )
-        last_year, last_month = this_year - 1, this_month - 1
-        if last_month == 0:
-            last_month_ym = (last_year, 12)
-        else:
-            last_month_ym = (this_year, last_month)
-        self._this_day = this_day
-        self._this_year = this_year
-        self._this_month_ym = (this_year, this_month)
-        self._last_year = last_year
-        self._last_month_ym = last_month_ym
-
-        # for last month and last year data, they won't change over a long period of time
-        # so we could use cache
-        #
-        # update policy for last month:
-        # for the first <LAST_MONTH_UPDATE_DAY_THRESHOLD> days of a month,
-        # update every `update_interval`.
-        # for the rest of the time, do not update.
-
-        # update policy for last year:
-        # for the first <LAST_YEAR_UPDATE_DAY_THRESHOLD> days of Jan, update daily at first update
-        # for the rest of the time, do not update
-        #
-        # when integration is reloaded, all updates will be triggered
-        # so user could just reload the integration to refresh the data if needed
-
-        if (
-            self.hass.data[DOMAIN][self._config_entry_id].get(DATA_KEY_LAST_UPDATE_DAY)
-            is None
-        ):
-            # first update
-            update_last_month = True
-            update_last_year = True
-            _LOGGER.debug(
-                "First update for account %s, getting all past data",
-                self._config[CONF_USERNAME],
-            )
-        else:
-            update_last_month = False
-            update_last_year = False
-
-            if this_day <= SETTING_LAST_MONTH_UPDATE_DAY_THRESHOLD:
-                update_last_month = True
-            today_first_update_triggered = (
-                self.hass.data[DOMAIN][self._config_entry_id][DATA_KEY_LAST_UPDATE_DAY]
-                == this_day
-            )
-            if this_month == 1 and this_day <= SETTING_LAST_YEAR_UPDATE_DAY_THRESHOLD:
-                if not today_first_update_triggered:
-                    update_last_year = True
-        self._if_update_last_month = update_last_month
-        self._if_update_last_year = update_last_year
+        # CSG calendar days always use China time, independent of the HA host zone.
+        self._today = datetime.datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        previous = self._today.replace(day=1) - timedelta(days=1)
+        self._this_day = self._today.day
+        self._this_year = self._today.year
+        self._this_month_ym = (self._today.year, self._today.month)
+        self._last_year = self._today.year - 1
+        self._last_month_ym = (previous.year, previous.month)
 
     async def _async_update_account_data(self, account: CSGElectricityAccount):
         start_time = time.time()
-        # TODO use asyncio.TaskGroup() in 3.11
-
-        # async with asyncio.TaskGroup() as task_group:
-        #     task_group.create_task(self._async_update_bal_arr(account))
-        #     task_group.create_task(self._async_update_yesterday_kwh(account))
-        #     task_group.create_task(self._async_update_this_year_stats(account))
-        #     task_group.create_task(self._async_update_last_year_stats(account))
-        #     task_group.create_task(
-        #         self._async_update_this_month_stats_and_ladder(account)
-        #     )
-        #     task_group.create_task(self._async_update_last_month_stats(account))
+        data = self._gathered_data[account.account_number]
+        data.update({suffix: STATE_UNAVAILABLE for suffix in UNSUPPORTED_SUFFIXES})
+        # Each source handles its own request failure. Programming errors must surface.
         await asyncio.gather(
             self._async_update_bal_arr(account),
-            self._async_update_yesterday_kwh(account),
-            self._async_update_this_year_stats(account),
-            self._async_update_last_year_stats(account),
-            self._async_update_this_month_stats_and_ladder(account),
-            self._async_update_last_month_stats(account),
-            return_exceptions=True,
+            self._async_update_year_stats(account),
+            self._async_update_year_stats(account, previous=True),
+            self._async_update_month_usage(account),
+            self._async_update_month_usage(account, previous=True),
         )
-        try:
-            self._update_latest_day(account)
-        except Exception as exc:  # pylint: disable=broad-except
-            _LOGGER.error(
-                "Ele account %s, update latest day data failed: %s",
-                account.account_number,
-                exc,
-            )
-
-        _LOGGER.debug(
-            "Ele account %s, update took %s seconds",
-            account.account_number,
-            time.time() - start_time,
-        )
+        self._update_last_month_bill(account)
+        self._update_latest_day(account)
+        _LOGGER.debug("Account update took %.2f seconds", time.time() - start_time)
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from API endpoint.
@@ -1065,6 +635,7 @@ class CSGCoordinator(DataUpdateCoordinator):
             seconds=self._config[CONF_SETTINGS][CONF_UPDATE_INTERVAL]
         )
         self._update_states()
+        self._gathered_data = {}
         await self._async_load_daily_corrections()
         # _LOGGER.debug("Coordinator update interval: %d", self.update_interval.seconds)
         _LOGGER.debug("Coordinator update started")
@@ -1094,9 +665,9 @@ class CSGCoordinator(DataUpdateCoordinator):
                             account.metering_point_number = mp[
                                 JSON_KEY_METERING_POINT_NUMBER
                             ]
-                            new_config[CONF_ELE_ACCOUNTS][
-                                account_number
-                            ] = account.dump()
+                            new_config[CONF_ELE_ACCOUNTS][account_number] = (
+                                account.dump()
+                            )
                             break
 
             await self._async_update_account_data(account)
@@ -1108,7 +679,7 @@ class CSGCoordinator(DataUpdateCoordinator):
             )
             _LOGGER.debug("Updated accounts with metering point number")
         _LOGGER.debug("Coordinator update took %s seconds", time.time() - start_time)
-        self.hass.data[DOMAIN][self._config_entry_id][
-            DATA_KEY_LAST_UPDATE_DAY
-        ] = self._this_day
+        self.hass.data[DOMAIN][self._config_entry_id][DATA_KEY_LAST_UPDATE_DAY] = (
+            self._this_day
+        )
         return self._gathered_data

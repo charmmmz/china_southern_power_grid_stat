@@ -4,11 +4,13 @@ Implementations of CSG's Web API
 this library is synchronous - since the updates are not frequent (12h+)
 and each update only contains a few requests
 """
+
 from __future__ import annotations
 
 import datetime
 import json
 import logging
+import math
 import random
 import time
 from base64 import b64decode, b64encode
@@ -244,7 +246,9 @@ class CSGClient:
             headers[HEADER_X_AUTH_TOKEN] = self.auth_token
             headers[HEADER_CUST_NUMBER] = self.customer_number
         if method == "POST":
-            response = self._session.post(url, json=payload, headers=headers)
+            response = self._session.post(
+                url, json=payload, headers=headers, timeout=(10, 45)
+            )
             if response.status_code != 200:
                 _LOGGER.error(
                     "API call %s returned status code %d", path, response.status_code
@@ -671,23 +675,35 @@ class CSGClient:
     def get_month_daily_usage_detail(
         self, account: CSGElectricityAccount, year_month: tuple[int, int]
     ) -> tuple[float, list[dict[str, str | float]]]:
-        """Get daily usage of current month"""
+        """Get reported daily energy from the electricity calendar (no costs)."""
 
         year, month = year_month
 
-        resp_data = self.api_query_day_electric_by_m_point(
+        resp_data = self.api_query_electricity_calender(
             year,
             month,
             account.area_code,
             account.ele_customer_id,
             account.metering_point_id,
+            account.metering_point_number,
         )
         month_total_kwh = float(resp_data["totalPower"])
         by_day = []
+        seen_dates = set()
         for d_data in resp_data["result"]:
+            # Blank calendar cells are unreported, not zero consumption.
+            if d_data.get("power") in (None, ""):
+                continue
+            date = datetime.date.fromisoformat(d_data["date"])
+            if (date.year, date.month) != year_month:
+                raise ValueError("Calendar contains a date outside the requested month")
+            if date in seen_dates:
+                raise ValueError("Calendar contains a duplicate date")
+            seen_dates.add(date)
             by_day.append(
-                {WF_ATTR_DATE: d_data["date"], WF_ATTR_KWH: float(d_data["power"])}
+                {WF_ATTR_DATE: date.isoformat(), WF_ATTR_KWH: float(d_data["power"])}
             )
+        by_day.sort(key=lambda row: row[WF_ATTR_DATE])
         return month_total_kwh, by_day
 
     def get_month_daily_cost_detail(
@@ -789,6 +805,14 @@ class CSGClient:
                     WF_ATTR_KWH: float(m_data["billingElectricity"]),
                 }
             )
+        numbers = [float(total_year_charge), float(total_year_kwh)]
+        numbers.extend(
+            row[key] for row in by_month for key in (WF_ATTR_CHARGE, WF_ATTR_KWH)
+        )
+        if not all(math.isfinite(number) for number in numbers):
+            raise ValueError("Billing data contains a non-finite value")
+        if float(total_year_kwh) < 0 or any(row[WF_ATTR_KWH] < 0 for row in by_month):
+            raise ValueError("Billing data contains negative consumption")
         return float(total_year_charge), float(total_year_kwh), by_month
 
     def get_yesterday_kwh(self, account: CSGElectricityAccount) -> float:
